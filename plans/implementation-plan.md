@@ -48,26 +48,15 @@ Third-party source and component versions MUST be pinned to immutable versions o
 
 On an unprovisioned device:
 
-1. Generate a cryptographically random per-device setup AP password using the ESP hardware RNG.
-2. Store the generated AP password in NVS.
-3. Derive a unique AP SSID such as `GateSetup-XXXXXX` from the device MAC suffix.
-4. Print the setup SSID, generated AP password, and setup URL to serial. Do not print future Wi-Fi or administrator passwords.
-5. Start a WPA2 captive-portal AP, DNS catch-all responder, DHCP, and the setup web server.
-6. Present a Svelte setup wizard.
-7. Require the user to configure:
-   - administrator password;
-   - station Wi-Fi SSID and password;
-   - setup AP password, with the generated value prefilled and changeable;
-   - Home display name;
-   - valid HomeKit eight-digit setup code;
-   - HomeKit four-character Setup ID needed to generate the QR payload;
-   - relay GPIO, active level, and pulse duration;
-   - closed-sensor GPIO, pull mode, active level, and debounce interval;
-   - opening and closing travel durations.
-8. Validate all settings before committing one versioned configuration transaction to NVS.
-9. Reboot into normal mode, connect to station Wi-Fi, then start HomeSpan and the authenticated management UI.
+1. Derive a unique AP SSID such as `GateSetup-XXXXXX` from the device MAC suffix.
+2. Start an open captive-portal AP, DNS catch-all responder, DHCP, and the setup web server. The AP has no product-wide or per-device password because first boot requires no serial-terminal access.
+3. Present one compact Svelte form containing only station Wi-Fi SSID/password and the new administrator password.
+4. Generate valid nontrivial HomeKit setup identity values and apply conservative defaults for the sequential operator, single feedback input, GPIOs, pulse timing, endpoint stability, and travel timeouts.
+5. Validate all values before committing the versioned application configuration and synchronized bootstrap Wi-Fi credentials to NVS.
+6. Reboot into normal mode, connect to station Wi-Fi, then start HomeSpan and the authenticated management UI.
+7. Configure Apple Home identity, operator profile, feedback topology, hardware GPIOs/polarities, and timing later through the authenticated management UI.
 
-No compile-time secret or universal product password is permitted.
+No compile-time secret, universal product password, or serial-disclosed setup secret is permitted.
 
 ### 3.2 Normal boot and Wi-Fi fallback
 
@@ -89,10 +78,10 @@ Default fallback policy:
 - retry with bounded exponential backoff;
 - start AP fallback after the deadline;
 - continue low-frequency station reconnect attempts while the AP remains available;
-- stop the fallback AP 60 seconds after a stable station connection, except while an authenticated UI session is actively saving configuration;
+- stop the fallback AP immediately after the station obtains an IP address;
 - do not erase credentials merely because authentication failed.
 
-The AP password remains configurable and stored in NVS. Changing it through the UI takes effect on the next AP start or explicit setup-mode restart.
+The setup/recovery AP is open at the Wi-Fi layer. On a provisioned device, all management and Wi-Fi migration actions remain protected by administrator login, session, CSRF, and re-authentication rules. Legacy generated AP passwords are cleared during bootstrap-credential load without changing the persisted blob layout.
 
 ### 3.3 BOOT button recovery
 
@@ -311,25 +300,25 @@ embedded asset serving, authentication, first-time setup, and the permanent
 management REST API. Refactor it without changing routes or externally visible
 behavior in this order:
 
-1. Extract `bootstrap_credentials` with the `gate_boot` NVS format, AP-password
-   generation, and station credential synchronization. Preserve the existing
-   persisted blob format during extraction.
-2. Extract `network_manager` as the sole application policy layer for Arduino
+1. ✅ Extracted `bootstrap_credentials` with the `gate_boot` NVS format and
+   station credential synchronization. The persisted blob layout remains
+   compatible; obsolete generated AP passwords are cleared on load.
+2. ✅ Extracted `network_manager` as the sole application policy layer for Arduino
    AP+STA mode, fallback `softAP`, and observation of station events. HomeSpan
    remains the sole owner of station connect/reconnect.
-3. Extract `captive_dns` into a task-owning component with explicit start/stop
+3. ✅ Extracted `captive_dns` into a task-owning component with explicit start/stop
    lifecycle and socket cleanup.
-4. Extract `web_auth` with opaque sessions, cookie parsing, expiration,
+4. ⏳ Extract `web_auth` with opaque sessions, cookie parsing, expiration,
    constant-time token checks, CSRF enforcement, login/logout, and password
    rotation. Route handlers consume an authentication interface rather than
    global session state.
-5. Extract `web_server` to own the ESP-IDF HTTP server, embedded assets, common
+5. ⏳ Extract `web_server` to own the ESP-IDF HTTP server, embedded assets, common
    response/security headers, body parsing, and route registration.
-6. Split handlers into `setup_api` (unprovisioned status and first-time save) and
+6. ⏳ Split handlers into `setup_api` (unprovisioned status and first-time save) and
    `management_api` (configuration, runtime, HomeKit, relay test, Wi-Fi migration,
    and reboot). Keep gate logic out of both; they may call only public runtime,
    repository, hardware-status, and HomeSpan-bridge APIs.
-7. Reduce `gate::provisioning::start()` to a compatibility coordinator, then
+7. ⏳ Reduce `gate::provisioning::start()` to a compatibility coordinator, then
    rename the top-level subsystem to `management` in a later isolated commit
    after all callers and documentation have migrated.
 
@@ -558,8 +547,9 @@ Use mocked drivers where possible and target hardware where required:
 - relay never glitches at boot, reset, flash, Wi-Fi reconnect, web restart, or HomeSpan restart;
 - pulse width and minimum interval are within configured tolerance;
 - sensor debounce rejects bounce on both edges;
-- station authentication failure starts fallback AP using the NVS password;
+- station authentication failure starts the open fallback AP after the bounded connection deadline;
 - fallback AP remains usable while station retries occur;
+- provisioned fallback access requires administrator login before Wi-Fi migration;
 - configuration commit survives power loss without a partial schema;
 - BOOT recovery gestures match section 3.3;
 - HomeSpan pairing reset is independent from application settings;
@@ -600,14 +590,14 @@ Execute in this order. Do not start broad feature work until the compatibility g
 4. Define typed configuration schema, validators, NVS namespaces, migrations, secret handling, and tests. ✅
 5. Implement safe relay, debounced sensor, BOOT gesture using Arduino-style GPIO APIs (`pinMode`, `digitalWrite`, `digitalRead`), hardware tests. ✅
 6. Implement the pure gate state reducer, transition table with exhaustive host tests (21 cases). ✅
-7. Implement Wi-Fi station lifecycle, random bootstrap AP credentials, captive DNS/portal, authentication-failure fallback, and reconnect behavior.
-8. Implement HomeSpan bridge, NVS-driven setup code/Setup ID, characteristic mapping, stable identity, and isolated pairing reset.
-9. Specify and implement authenticated REST API, sessions, CSRF, rate limits, redaction, and event log.
-10. Scaffold Svelte UI; implement first-boot wizard, authentication, dashboard, settings, Apple pairing QR, help, and destructive confirmations.
-11. Build/embed compressed UI assets and enforce flash partition budgets.
-12. Integrate all subsystems and verify boot sequencing and no-relay-glitch behavior.
-13. Run host, firmware, provisioning, Apple Home, recovery, power-loss, and security acceptance suites.
-14. Complete operator documentation, wiring diagram, known limitations, flashing instructions, and release checklist.
+7. Implement Wi-Fi station lifecycle, open bootstrap/recovery AP, captive DNS/portal, authentication-failure fallback, and reconnect behavior. ✅
+8. Implement HomeSpan bridge, NVS-driven setup code/Setup ID, characteristic mapping, stable identity, and isolated pairing reset. 🟡 Core bridge and pairing work; isolated pairing reset/QR completion remains.
+9. Specify and implement authenticated REST API, sessions, CSRF, rate limits, redaction, and event log. 🟡 Sessions and CSRF exist; rate limits, event log, and §6.1 extraction remain.
+10. Scaffold Svelte UI; implement compact first-boot setup, authentication, dashboard, settings, operator profiles, Apple pairing help, and destructive confirmations. 🟡 Core UI exists; QR and remaining destructive flows remain.
+11. Build/embed compressed UI assets and enforce flash partition budgets. ✅
+12. Integrate all subsystems and verify boot sequencing and no-relay-glitch behavior. 🟡 Host/build/bench checks pass; real-gate validation remains.
+13. Run host, firmware, provisioning, Apple Home, recovery, power-loss, and security acceptance suites. 🟡 Automated and bench checks pass; full real-gate, Apple STOPPED rendering, power-loss, and security suites remain.
+14. Complete operator documentation, wiring diagram, known limitations, flashing instructions, and release checklist. ⏳
 
 ## 16. Definition of done
 
@@ -615,9 +605,9 @@ The project is complete only when all statements below are true:
 
 - A clean build succeeds only with ESP-IDF 5.5.4 after sourcing the specified activation script.
 - Dependencies are pinned and license obligations documented.
-- A user can provision an erased ESP32 entirely through its captive web UI using the serial-disclosed random AP credential.
+- A user can provision an erased ESP32 entirely through an open captive setup AP without a serial terminal, entering only Wi-Fi and administrator credentials on first boot.
 - All required operational values are UI-configurable and persisted; none are hardcoded.
-- Failed station authentication automatically exposes the captive fallback AP with its NVS-configured password without erasing settings.
+- Failed station connection automatically exposes the open captive fallback AP without erasing settings, and provisioned recovery requires administrator login before Wi-Fi changes.
 - The device pairs through an UI-generated QR as an Apple Garage Door Opener using HomeSpan.
 - No HomeKey implementation or artifact is present.
 - One accepted target-changing command produces no more than one physical relay pulse; no automatic correction pulse exists anywhere in code.
