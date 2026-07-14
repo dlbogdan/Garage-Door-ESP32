@@ -291,33 +291,37 @@ trust the command-line checker unless it actually fails.
 
 ## Exact next milestone
 
-Flash and validate live HomeSpan discovery, numeric-code pairing, state updates,
-and relay commands on the bench.
+Fix Apple Home publication of STOPPED after a mid-travel pause, then perform the
+management-plane cleanup as separate behavior-preserving commits.
 
 Recommended sequence:
 
-1. Flash the current firmware and capture boot logs through HomeSpan readiness.
-2. Confirm both the station connection and `GateSetup-XXXXXX` fallback AP remain
-   active after HomeSpan starts.
-3. Sign in and open **Access**; verify the Apple Home card reports Ready and
-   displays the formatted pairing code.
-4. On iPhone/iPad, use Home → Add Accessory → More Options, select the configured
-   garage opener, and enter the displayed numeric code.
-5. Confirm the Access card changes to Paired.
-6. Exercise Open and Close from Apple Home and confirm exactly one relay click
-   for each accepted target-changing command.
-7. Move the closed-sensor jumper and confirm current state changes in both the
-   dashboard and Apple Home.
-8. Verify close timeout publishes STOPPED plus obstruction when the closed sensor
-   does not become active.
-9. After numeric pairing works, add QR rendering and pairing reset/removal UI.
+1. Reproduce OPENING → request CLOSED and CLOSING → request OPEN while capturing
+   reducer/runtime logs and HomeSpan characteristic values.
+2. Determine whether the stale state is caused by reducer publication timing,
+   HomeSpan `loop()` ordering, or a HomeKit CurrentDoorState/TargetDoorState update
+   interaction. Fix it without changing the confirmed one-command/one-pulse rule.
+3. Add a regression test at the lowest practical boundary and bench-confirm that
+   Apple reports STOPPED immediately after the physical pause pulse.
+4. Commit the STOPPED-state fix independently.
+5. Follow the management-plane cleanup plan in `plans/implementation-plan.md`,
+   extracting bootstrap credentials, networking, captive DNS, web auth, web
+   server, setup API, and management API one concern per commit.
+6. Preserve routes, payloads, NVS compatibility, HomeSpan behavior, fallback AP,
+   authentication/CSRF, and relay safety; run tests/build and a hardware smoke
+   test after each extraction.
 
 ## Resume prompt
 
 For the next conversation, use:
 
 > Read `docs/development-status.md` and continue from the exact next milestone.
-> Read `docs/development-status.md` and continue from the exact next milestone.
-> Flash the live HomeSpan build, verify AP+STA coexistence, pair using the Access
-> tab numeric code, and bench-test Apple Home commands plus sensor state. Record
-> the boot/pairing results before adding QR and pairing reset controls.
+> The current checkpoint is commit `18db43f` (Ducati logic), following `dd1c7d9`
+> (serialized runtime and working HomeSpan pairing). Pairing and primary gate
+> behavior work. First diagnose why an opposite target command during travel
+> physically pauses the operator but Apple Home does not reliably publish
+> CurrentDoorState=STOPPED. Keep one accepted command to one pulse and never add
+> an automatic reversal pulse. Commit that fix separately. Then execute the
+> management-plane extraction plan in `plans/implementation-plan.md` without
+> changing behavior. Never modify the pinned HomeSpan submodule without explicit
+> approval.
