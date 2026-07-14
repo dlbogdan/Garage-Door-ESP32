@@ -95,6 +95,22 @@ void initialize_networking() {
   ESP_LOGI(kTag, "Arduino/HomeSpan networking initialized");
 }
 
+esp_err_t connect_bootstrap_station(const char* ssid, const char* password) {
+  if (ssid == nullptr || ssid[0] == '\0' || password == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (homekit_active.load()) return ESP_ERR_INVALID_STATE;
+
+  WiFi.setAutoReconnect(true);
+  const wl_status_t status = WiFi.begin(ssid, password);
+  if (status == WL_CONNECT_FAILED) {
+    ESP_LOGE(kTag, "Could not start staged-onboarding station connection");
+    return ESP_FAIL;
+  }
+  ESP_LOGI(kTag, "Arduino networking is connecting to staged-onboarding Wi-Fi");
+  return ESP_OK;
+}
+
 esp_err_t start(const gate::config::AppConfig& config) {
   if (homekit_active.load()) return ESP_ERR_INVALID_STATE;
   if (!gate::runtime::active()) return ESP_ERR_INVALID_STATE;

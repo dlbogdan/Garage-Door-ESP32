@@ -439,8 +439,14 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   int feedback_stability_ms = 0;
   std::string operator_profile;
   std::string feedback_mode;
-  const bool canonical = form_value(body, "operatorProfile", &operator_profile) ||
-                         form_value(body, "feedbackMode", &feedback_mode);
+  const bool has_operator_profile =
+      form_value(body, "operatorProfile", &operator_profile);
+  const bool has_feedback_mode = form_value(body, "feedbackMode", &feedback_mode);
+  const bool canonical = has_operator_profile && has_feedback_mode;
+  if (has_operator_profile != has_feedback_mode) {
+    return send_error(request, "400 Bad Request",
+                      "Operator profile and feedback topology must both be provided.");
+  }
   if (!form_value(body, "displayName", &display_name) || display_name.empty() ||
       display_name.size() > 64 ||
       !parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) ||
@@ -780,30 +786,57 @@ esp_err_t save_handler(httpd_req_t* request) {
                       "Enter an SSID and either no password or 8-63 characters.");
   }
 
-  const bool fields_valid =
-      form_value(body, "adminPassword", &admin_password) &&
-      form_value(body, "displayName", &display_name) &&
-      form_value(body, "setupCode", &setup_code) &&
-      form_value(body, "setupId", &setup_id) &&
-      form_value(body, "relayLevel", &relay_level) &&
-      form_value(body, "sensorLevel", &sensor_level) &&
-      form_value(body, "sensorPull", &sensor_pull) &&
-      form_value(body, "feedbackEndpoint", &feedback_endpoint) &&
-      parse_integer(body, "relayGpio", 0, 39, &relay_gpio) &&
-      parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) &&
-      parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) &&
-      parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) &&
-      parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) &&
-      parse_integer(body, "feedbackStabilityMs", 1000, 10000,
-                    &feedback_stability_ms) &&
-      admin_password.size() >= 10 && admin_password.size() <= 128 &&
-      (relay_level == "low" || relay_level == "high") &&
-      (sensor_level == "low" || sensor_level == "high") &&
-      (sensor_pull == "none" || sensor_pull == "up" || sensor_pull == "down") &&
-      (feedback_endpoint == "open" || feedback_endpoint == "closed");
-  if (!fields_valid) {
+  if (!form_value(body, "adminPassword", &admin_password)) {
+    return send_error(request, "400 Bad Request", "Administrator password is missing.");
+  }
+  if (admin_password.size() < 10 || admin_password.size() > 128) {
     return send_error(request, "400 Bad Request",
-                      "One or more setup fields have an invalid format.");
+                      "Administrator password must contain 10-128 characters.");
+  }
+  if (!form_value(body, "displayName", &display_name) || display_name.empty()) {
+    return send_error(request, "400 Bad Request", "Apple Home display name is missing.");
+  }
+  if (!form_value(body, "setupCode", &setup_code)) {
+    return send_error(request, "400 Bad Request", "Apple Home setup code is missing.");
+  }
+  if (!form_value(body, "setupId", &setup_id)) {
+    return send_error(request, "400 Bad Request", "Apple Home Setup ID is missing.");
+  }
+  if (!form_value(body, "relayLevel", &relay_level) ||
+      (relay_level != "low" && relay_level != "high")) {
+    return send_error(request, "400 Bad Request", "Relay active level is invalid.");
+  }
+  if (!form_value(body, "sensorLevel", &sensor_level) ||
+      (sensor_level != "low" && sensor_level != "high")) {
+    return send_error(request, "400 Bad Request", "Feedback active level is invalid.");
+  }
+  if (!form_value(body, "sensorPull", &sensor_pull) ||
+      (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down")) {
+    return send_error(request, "400 Bad Request", "Feedback pull mode is invalid.");
+  }
+  if (!form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
+      (feedback_endpoint != "open" && feedback_endpoint != "closed")) {
+    return send_error(request, "400 Bad Request", "Feedback endpoint meaning is invalid.");
+  }
+  if (!parse_integer(body, "relayGpio", 0, 39, &relay_gpio)) {
+    return send_error(request, "400 Bad Request", "Relay GPIO must be between 0 and 39.");
+  }
+  if (!parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio)) {
+    return send_error(request, "400 Bad Request", "Feedback GPIO must be between 0 and 39.");
+  }
+  if (!parse_integer(body, "pulseMs", 100, 2000, &pulse_ms)) {
+    return send_error(request, "400 Bad Request", "Pulse duration must be 100-2000 ms.");
+  }
+  if (!parse_integer(body, "openingSeconds", 3, 180, &opening_seconds)) {
+    return send_error(request, "400 Bad Request", "Opening time must be 3-180 seconds.");
+  }
+  if (!parse_integer(body, "closingSeconds", 3, 180, &closing_seconds)) {
+    return send_error(request, "400 Bad Request", "Closing time must be 3-180 seconds.");
+  }
+  if (!parse_integer(body, "feedbackStabilityMs", 1000, 10000,
+                     &feedback_stability_ms)) {
+    return send_error(request, "400 Bad Request",
+                      "Endpoint stability must be 1000-10000 ms.");
   }
 
   gate::config::AppConfig app_config;
@@ -865,6 +898,52 @@ esp_err_t save_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
+esp_err_t setup_wifi_handler(httpd_req_t* request) {
+  if (application_provisioned) {
+    return send_error(request, "403 Forbidden", "Configuration is already saved.");
+  }
+  if (request->content_len <= 0 || request->content_len > 512) {
+    return send_error(request, "400 Bad Request", "Invalid request size.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+
+  std::string ssid;
+  std::string password;
+  if (!form_value(body, "ssid", &ssid) || ssid.empty() || ssid.size() > 32) {
+    return send_error(request, "400 Bad Request",
+                      "Wi-Fi name must contain 1-32 characters.");
+  }
+  if (!form_value(body, "password", &password) || password.size() > 63 ||
+      (!password.empty() && password.size() < 8)) {
+    return send_error(request, "400 Bad Request",
+                      "Wi-Fi password must be empty or contain 8-63 characters.");
+  }
+
+  const gate::bootstrap::Credentials previous = credentials;
+  gate::bootstrap::set_station(&credentials, ssid, password);
+  std::fill(password.begin(), password.end(), '\0');
+  const esp_err_t result = gate::bootstrap::save(credentials);
+  if (result != ESP_OK) {
+    credentials = previous;
+    return send_error(request, "500 Internal Server Error",
+                      "Could not save Wi-Fi credentials.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  const esp_err_t response_result =
+      httpd_resp_sendstr(request, "{\"saved\":true,\"restarting\":true}");
+  if (response_result == ESP_OK) {
+    xTaskCreate(restart_task, "wifi_setup_restart", 2048, nullptr, 5, nullptr);
+  }
+  return response_result;
+}
+
 esp_err_t captive_handler(httpd_req_t* request) {
   httpd_resp_set_status(request, "302 Found");
   httpd_resp_set_hdr(request, "Location", "http://192.168.4.1/");
@@ -916,7 +995,10 @@ esp_err_t start_http_server() {
   const httpd_uri_t reboot{.uri = "/api/v1/system/reboot", .method = HTTP_POST,
                            .handler = reboot_handler, .user_ctx = nullptr};
   const httpd_uri_t save{.uri = "/save", .method = HTTP_POST,
-                         .handler = save_handler, .user_ctx = nullptr};
+                          .handler = save_handler, .user_ctx = nullptr};
+  const httpd_uri_t setup_wifi{
+      .uri = "/api/v1/setup/wifi", .method = HTTP_POST,
+      .handler = setup_wifi_handler, .user_ctx = nullptr};
   const httpd_uri_t captive{.uri = "/*", .method = HTTP_GET,
                             .handler = captive_handler, .user_ctx = nullptr};
   if ((result = httpd_register_uri_handler(server, &root)) != ESP_OK ||
@@ -934,6 +1016,7 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &change_wifi)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &logout)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &reboot)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &setup_wifi)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &save)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &captive)) != ESP_OK) {
     httpd_stop(server);
@@ -952,6 +1035,15 @@ esp_err_t start() {
   application_provisioned =
       gate::config::ConfigRepository().load(&saved_config) == ESP_OK;
   if (application_provisioned) active_config = std::move(saved_config);
+
+  if (!application_provisioned && credentials.station_ssid[0] != '\0') {
+    const esp_err_t connect_result = gate::homekit::connect_bootstrap_station(
+        credentials.station_ssid, credentials.station_password);
+    if (connect_result != ESP_OK) {
+      ESP_LOGW(kTag, "Could not resume staged-onboarding Wi-Fi connection: %s",
+               esp_err_to_name(connect_result));
+    }
+  }
 
   ESP_RETURN_ON_ERROR(
       gate::network::start({credentials.ap_password,

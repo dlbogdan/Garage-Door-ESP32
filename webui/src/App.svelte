@@ -55,6 +55,28 @@
     message = 'Validating and saving configuration…';
     try {
       const data = new FormData(event.currentTarget);
+      if (!data.has('displayName')) {
+        const random = new Uint32Array(2);
+        crypto.getRandomValues(random);
+        data.set('displayName', 'Garage');
+        data.set('setupId', random[0].toString(36).toUpperCase().padStart(4, '0').slice(-4));
+        data.set('setupCode', String(10000000 + (random[1] % 89999999)));
+        data.set('relayGpio', '26');
+        data.set('relayLevel', 'low');
+        data.set('pulseMs', '1000');
+        data.set('sensorGpio', '27');
+        data.set('sensorLevel', 'low');
+        data.set('sensorPull', 'up');
+        data.set('feedbackEndpoint', 'closed');
+        data.set('feedbackStabilityMs', '2000');
+        data.set('openingSeconds', '20');
+        data.set('closingSeconds', '20');
+      }
+      const relayGpio = String(data.get('relayGpio') || '');
+      const sensorGpio = String(data.get('sensorGpio') || '');
+      if (relayGpio === sensorGpio) {
+        throw new Error(`Relay GPIO and feedback GPIO cannot both be GPIO ${relayGpio}. Choose two different pins.`);
+      }
       if (!changeWifi && status.hasWifi) {
         data.delete('ssid');
         data.delete('password');
@@ -71,6 +93,37 @@
       message = 'Saved. The controller is restarting…';
     } catch (error) {
       message = error instanceof Error ? error.message : 'Save failed.';
+      saving = false;
+    }
+  }
+
+  async function saveInitialWifi(event) {
+    saving = true;
+    message = 'Saving first-time setup…';
+    const data = new FormData(event.currentTarget);
+    try {
+      const random = new Uint32Array(2);
+      crypto.getRandomValues(random);
+      const body = new URLSearchParams({
+        ssid: String(data.get('ssid') || ''),
+        password: String(data.get('password') || ''),
+        adminPassword: String(data.get('adminPassword') || ''),
+        displayName: 'Garage',
+        setupId: random[0].toString(36).toUpperCase().padStart(4, '0').slice(-4),
+        setupCode: String(10000000 + (random[1] % 89999999)),
+        relayGpio: '26', relayLevel: 'low', pulseMs: '1000',
+        sensorGpio: '27', sensorLevel: 'low', sensorPull: 'up',
+        feedbackEndpoint: 'closed', feedbackStabilityMs: '2000',
+        openingSeconds: '20', closingSeconds: '20'
+      });
+      const response = await fetch('/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+      message = 'Setup saved. The controller is restarting and connecting to your network.';
+    } catch (error) {
+      message = error instanceof Error ? error.message : 'Could not save Wi-Fi.';
       saving = false;
     }
   }
@@ -101,6 +154,8 @@
     const data = new FormData(event.currentTarget);
     const body = new URLSearchParams();
     for (const [key, value] of data) body.set(key, String(value));
+    body.set('operatorProfile', operatorProfile);
+    body.set('feedbackMode', feedbackMode);
     try {
       const response = await fetch('/api/v1/config', {
         method: 'PUT', headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' }, body
@@ -242,25 +297,12 @@
       <section class="card empty-state"><div class="success-icon">≡</div><h3>Event logs</h3><p>Persistent redacted event logging is not implemented yet. Runtime diagnostics remain available through the ESP32 serial monitor.</p><span class="badge">Planned</span></section>
     {/if}
     {#if message}<p class="message">{message}</p>{/if}<button class="danger" onclick={() => mutate('/api/v1/system/reboot')}>Restart controller</button>
-  {:else}
-    <form onsubmit={(event) => { event.preventDefault(); submit(event); }}>
-      <section class="intro"><div><p class="eyebrow">Secure first-time setup</p><h2>Configure your garage controller</h2><p>Settings are validated on the ESP32 before anything is stored. Relay output stays disabled.</p></div><div class="step">1 <span>of</span> 1</div></section>
-
-      <section class="card"><div class="section-title"><span>01</span><div><h3>Administrator</h3><p>Protect future device management.</p></div></div><label>Administrator password<input name="adminPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /><small>At least 10 characters. Only a salted verifier is stored.</small></label></section>
-
-      <section class="card"><div class="section-title"><span>02</span><div><h3>Network</h3><p>Connect the controller to your local Wi-Fi.</p></div></div>
-        {#if status.hasWifi}<div class="current"><div><strong>Current network</strong><span>{status.ssid}</span></div><label class="switch"><input type="checkbox" bind:checked={changeWifi} /><span></span>Change</label></div>{/if}
-        {#if changeWifi}<div class="grid"><label>Wi-Fi name<input name="ssid" maxlength="32" required={changeWifi} autocomplete="off" /></label><label>Wi-Fi password<input name="password" type="password" minlength="8" maxlength="63" required={changeWifi} autocomplete="new-password" /></label></div>{:else}<p class="hint">The saved Wi-Fi password will be reused. It is never sent to this page.</p>{/if}
-      </section>
-
-      <section class="card"><div class="section-title"><span>03</span><div><h3>Apple Home</h3><p>Identity used for Garage Door Opener pairing.</p></div></div><div class="grid"><label>Display name<input name="displayName" maxlength="64" value="Garage" required /></label><label>Setup ID<input name="setupId" pattern="[A-Z0-9]{4}" maxlength="4" placeholder="G7T2" required /></label><label class="wide">Eight-digit setup code<input name="setupCode" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" placeholder="48271635" required /><small>Avoid repeated or sequential digits.</small></label></div></section>
-
-      <section class="card"><div class="section-title"><span>04</span><div><h3>Hardware</h3><p>Choose distinct, safe ESP32 pins.</p></div></div><div class="grid three"><label>Relay GPIO<input name="relayGpio" type="number" min="0" max="39" required /></label><label>Relay active level<select name="relayLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Pulse duration<input name="pulseMs" type="number" min="100" max="2000" value="1000" required /><small>milliseconds</small></label><label>Feedback GPIO<input name="sensorGpio" type="number" min="0" max="39" required /></label><label>Electrical active level<select name="sensorLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Active signal means<select name="feedbackEndpoint"><option value="open">Gate open</option><option value="closed">Gate closed</option></select></label><label>Endpoint stability<input name="feedbackStabilityMs" type="number" min="1000" max="10000" value="2000" required /><small>milliseconds</small></label><label>Sensor pull<select name="sensorPull"><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label></div></section>
-
-      <section class="card"><div class="section-title"><span>05</span><div><h3>Travel timing</h3><p>Expected full gate movement duration.</p></div></div><div class="grid"><label>Opening time<input name="openingSeconds" type="number" min="3" max="180" value="20" required /><small>seconds</small></label><label>Closing time<input name="closingSeconds" type="number" min="3" max="180" value="20" required /><small>seconds</small></label></div></section>
-
+  {:else if !status.provisioned}
+    <form onsubmit={(event) => { event.preventDefault(); saveInitialWifi(event); }}>
+      <section class="intro"><div><p class="eyebrow">First-time setup</p><h2>Connect and secure</h2><p>Enter only Wi-Fi and the administrator password. Gate hardware and Apple Home settings use safe defaults and can be changed in the main app.</p></div><div class="step">1 <span>of</span> 1</div></section>
+      <section class="card"><div class="section-title"><span>01</span><div><h3>Wi-Fi and administrator</h3><p>Connect the controller and protect its management page.</p></div></div><div class="grid"><label>Wi-Fi name<input name="ssid" maxlength="32" value={status.ssid} required autocomplete="off" /></label><label>Wi-Fi password<input name="password" type="password" minlength="8" maxlength="63" autocomplete="new-password" /><small>Leave empty only for an open network.</small></label><label class="wide">Administrator password<input name="adminPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /><small>At least 10 characters.</small></label></div></section>
       {#if message}<p class="message" role="status">{message}</p>{/if}
-      <button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Validate, save & restart'}<span>→</span></button>
+      <button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save setup & restart'}<span>→</span></button>
     </form>
   {/if}
 </main>
