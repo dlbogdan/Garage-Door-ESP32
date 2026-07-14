@@ -1,7 +1,6 @@
 #include "provisioning.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -11,17 +10,17 @@
 
 #include "app_config.hpp"
 #include "bootstrap_credentials.hpp"
+#include "captive_dns.hpp"
 #include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gate_hardware.hpp"
-#include "lwip/inet.h"
-#include "lwip/sockets.h"
 #include "password.hpp"
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
@@ -636,67 +635,6 @@ void restart_task(void*) {
   esp_restart();
 }
 
-void dns_task(void*) {
-  const int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (socket_fd < 0) {
-    ESP_LOGE(kTag, "Could not create captive DNS socket");
-    vTaskDelete(nullptr);
-    return;
-  }
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = htons(53);
-  address.sin_addr.s_addr = htonl(INADDR_ANY);
-  if (bind(socket_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
-    ESP_LOGE(kTag, "Could not bind captive DNS socket");
-    close(socket_fd);
-    vTaskDelete(nullptr);
-    return;
-  }
-
-  std::array<std::uint8_t, 512> packet{};
-  while (true) {
-    sockaddr_in client{};
-    socklen_t client_length = sizeof(client);
-    const int length = recvfrom(socket_fd, packet.data(), packet.size(), 0,
-                                reinterpret_cast<sockaddr*>(&client),
-                                &client_length);
-    if (length < 12) continue;
-
-    std::size_t question_end = 12;
-    while (question_end < static_cast<std::size_t>(length) &&
-           packet[question_end] != 0) {
-      const std::size_t label_length = packet[question_end];
-      if (label_length > 63 || question_end + label_length + 1 >=
-                                   static_cast<std::size_t>(length)) {
-        question_end = packet.size();
-        break;
-      }
-      question_end += label_length + 1;
-    }
-    if (question_end + 5 > static_cast<std::size_t>(length)) continue;
-    question_end += 5;  // root label, QTYPE, and QCLASS.
-    if (question_end + 16 > packet.size()) continue;
-
-    packet[2] = 0x81;
-    packet[3] = 0x80;
-    packet[6] = 0;
-    packet[7] = 1;
-    packet[8] = packet[9] = packet[10] = packet[11] = 0;
-    std::size_t response_length = question_end;
-    const std::uint8_t answer[] = {
-        0xC0, 0x0C,  // Pointer to queried name.
-        0x00, 0x01,  // A record.
-        0x00, 0x01,  // Internet class.
-        0x00, 0x00, 0x00, 0x3C,  // 60-second TTL.
-        0x00, 0x04, 192, 168, 4, 1};
-    std::memcpy(packet.data() + response_length, answer, sizeof(answer));
-    response_length += sizeof(answer);
-    sendto(socket_fd, packet.data(), response_length, 0,
-           reinterpret_cast<sockaddr*>(&client), client_length);
-  }
-}
-
 esp_err_t save_handler(httpd_req_t* request) {
   if (application_provisioned) {
     return send_error(request, "403 Forbidden", "Configuration is already saved.");
@@ -920,9 +858,8 @@ esp_err_t start() {
       kTag, "Could not start setup network");
   ESP_RETURN_ON_ERROR(start_http_server(), kTag,
                       "Could not start setup web server");
-  if (xTaskCreate(dns_task, "captive_dns", 3072, nullptr, 4, nullptr) != pdPASS) {
-    return ESP_ERR_NO_MEM;
-  }
+  ESP_RETURN_ON_ERROR(gate::captive_dns::start(), kTag,
+                      "Could not start captive DNS");
 
   ESP_LOGI(kTag, "Setup AP SSID: %s", gate::network::access_point_ssid());
   ESP_LOGI(kTag, "Setup AP password: %s", credentials.ap_password);
