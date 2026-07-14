@@ -1047,7 +1047,10 @@ esp_err_t start() {
 
   ESP_RETURN_ON_ERROR(
       gate::network::start({credentials.ap_password,
-                            credentials.station_ssid[0] != '\0'}),
+                            application_provisioned,
+                            application_provisioned
+                                ? active_config.wifi.connection_deadline_ms
+                                : 30000}),
       kTag, "Could not start setup network");
   ESP_RETURN_ON_ERROR(start_http_server(), kTag,
                       "Could not start setup web server");
@@ -1055,7 +1058,7 @@ esp_err_t start() {
                       "Could not start captive DNS");
 
   ESP_LOGI(kTag, "Setup AP SSID: %s", gate::network::access_point_ssid());
-  ESP_LOGI(kTag, "Setup AP password: %s", credentials.ap_password);
+  ESP_LOGI(kTag, "Setup AP security: open (management requires administrator login after provisioning)");
   ESP_LOGI(kTag, "Setup URL: http://192.168.4.1/");
   return ESP_OK;
 }

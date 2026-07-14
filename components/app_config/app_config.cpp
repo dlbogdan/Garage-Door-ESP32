@@ -86,10 +86,11 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     add_error(&errors, "wifi.connectionDeadlineMs", "range",
               "Connection deadline must be 10-180 seconds");
   }
-  if (config.access_point.password.size() < 8 ||
-      config.access_point.password.size() > 63) {
+  if (!config.access_point.password.empty() &&
+      (config.access_point.password.size() < 8 ||
+       config.access_point.password.size() > 63)) {
     add_error(&errors, "accessPoint.password", "length",
-              "Setup AP password must be 8-63 bytes");
+              "Setup AP password must be empty or 8-63 bytes");
   }
   if (config.homekit.display_name.empty() ||
       config.homekit.display_name.size() > 64) {
