@@ -2,22 +2,24 @@
 
 #include "app_config.hpp"
 #include "esp_err.h"
+#include "operator_domain.hpp"
 
 namespace gate::hardware {
 
-using SensorChangedCallback = void (*)(bool active, void* context);
+using FeedbackChangedCallback = void (*)(
+    gate::controller::FeedbackAssertions assertions, void* context);
 
-// Initializes the relay inactive and starts debounced sensor monitoring.
+// Initializes every configured output inactive before enabling output mode,
+// then starts coherent debounced feedback monitoring.
 esp_err_t start_monitoring(const gate::config::AppConfig& config,
-                           SensorChangedCallback callback = nullptr,
+                           FeedbackChangedCallback callback = nullptr,
                            void* callback_context = nullptr);
 bool monitoring_active();
-bool feedback_active();
+gate::controller::FeedbackAssertions feedback_assertions();
 
-// Low-level fail-safe primitives. The serialized controller runtime is their
-// sole caller; no command-facing component is permitted to drive the relay.
-esp_err_t activate_relay();
-esp_err_t deactivate_relay();
-bool relay_active();
+// Semantic fail-safe primitives. Only the serialized runtime may call these.
+esp_err_t activate_command(gate::controller::ActuatorCommand command);
+esp_err_t deactivate_all();
+gate::controller::ActuatorCommand active_command();
 
 }  // namespace gate::hardware

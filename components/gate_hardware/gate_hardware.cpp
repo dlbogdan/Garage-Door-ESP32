@@ -15,53 +15,135 @@ namespace {
 
 constexpr char kTag[] = "gate_hardware";
 constexpr TickType_t kSamplePeriod = pdMS_TO_TICKS(10);
-gate::config::SensorConfig sensor_config;
-gate::config::RelayConfig relay_config;
-std::atomic_bool monitor_active{false};
-std::atomic_bool stable_sensor_active{false};
-std::atomic_bool relay_is_active{false};
-SensorChangedCallback sensor_changed_callback{nullptr};
-void* sensor_changed_context{nullptr};
 
-std::uint32_t relay_level(bool active) {
+gate::config::OperatorConfig operator_config;
+std::atomic_bool monitor_active{false};
+std::atomic_bool opened_asserted{false};
+std::atomic_bool closed_asserted{false};
+std::atomic<gate::controller::ActuatorCommand> current_command{
+    gate::controller::ActuatorCommand::kNone};
+FeedbackChangedCallback feedback_callback{nullptr};
+void* feedback_context{nullptr};
+
+const gate::config::PulseOutputConfig* output_for(
+    gate::controller::ActuatorCommand command) {
+  using gate::controller::ActuatorCommand;
+  switch (command) {
+    case ActuatorCommand::kStep:
+      return operator_config.profile == gate::config::OperatorProfile::kSequential
+                 ? &operator_config.step
+                 : nullptr;
+    case ActuatorCommand::kOpen:
+      return operator_config.profile == gate::config::OperatorProfile::kDirectional
+                 ? &operator_config.open
+                 : nullptr;
+    case ActuatorCommand::kClose:
+      return operator_config.profile == gate::config::OperatorProfile::kDirectional
+                 ? &operator_config.close
+                 : nullptr;
+    case ActuatorCommand::kNone: return nullptr;
+  }
+  return nullptr;
+}
+
+std::uint32_t output_level(const gate::config::PulseOutputConfig& output,
+                           bool active) {
   const bool active_high =
-      relay_config.active_level == gate::config::ActiveLevel::kHigh;
+      output.active_level == gate::config::ActiveLevel::kHigh;
   return active == active_high ? 1U : 0U;
 }
 
-bool sensor_active() {
-  const bool high = gpio_get_level(static_cast<gpio_num_t>(sensor_config.gpio)) != 0;
-  return sensor_config.active_level == gate::config::ActiveLevel::kHigh ? high
-                                                                        : !high;
+bool input_asserted(const gate::config::FeedbackInputConfig& input) {
+  const bool high =
+      gpio_get_level(static_cast<gpio_num_t>(input.gpio)) != 0;
+  return input.active_level == gate::config::ActiveLevel::kHigh ? high : !high;
+}
+
+esp_err_t set_output(const gate::config::PulseOutputConfig& output,
+                     bool active) {
+  return gpio_set_level(static_cast<gpio_num_t>(output.gpio),
+                        output_level(output, active));
+}
+
+esp_err_t initialize_output(const gate::config::PulseOutputConfig& output) {
+  const gpio_num_t gpio = static_cast<gpio_num_t>(output.gpio);
+  esp_err_t result = set_output(output, false);
+  if (result == ESP_OK) result = gpio_set_direction(gpio, GPIO_MODE_OUTPUT);
+  if (result == ESP_OK) result = set_output(output, false);
+  return result;
+}
+
+esp_err_t initialize_input(const gate::config::FeedbackInputConfig& input) {
+  const gpio_num_t gpio = static_cast<gpio_num_t>(input.gpio);
+  esp_err_t result = gpio_set_direction(gpio, GPIO_MODE_INPUT);
+  if (result != ESP_OK) return result;
+  switch (input.pull) {
+    case gate::config::SensorPull::kUp:
+      return gpio_set_pull_mode(gpio, GPIO_PULLUP_ONLY);
+    case gate::config::SensorPull::kDown:
+      return gpio_set_pull_mode(gpio, GPIO_PULLDOWN_ONLY);
+    case gate::config::SensorPull::kNone:
+      return gpio_set_pull_mode(gpio, GPIO_FLOATING);
+  }
+  return ESP_ERR_INVALID_ARG;
 }
 
 std::uint32_t now_ms() {
   return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
 }
 
-void sensor_task(void*) {
-  const bool initial = sensor_active();
-  stable_sensor_active.store(initial);
-  SensorDebouncer debouncer(initial, sensor_config.debounce_ms, now_ms());
-  ESP_LOGI(kTag, "Sensor GPIO %d initial raw=%d, active level=%s, state=%s",
-           sensor_config.gpio,
-           gpio_get_level(static_cast<gpio_num_t>(sensor_config.gpio)),
-           sensor_config.active_level == gate::config::ActiveLevel::kHigh
-               ? "high"
-               : "low",
-           initial ? "closed" : "not closed");
+void feedback_task(void*) {
+  const bool dual = operator_config.feedback_topology ==
+                    gate::config::FeedbackTopology::kDual;
+  const auto& first = dual ? operator_config.opened_feedback
+                           : operator_config.single_feedback;
+  const auto& second = operator_config.closed_feedback;
+  SensorDebouncer first_debouncer(input_asserted(first), first.debounce_ms,
+                                   now_ms());
+  SensorDebouncer second_debouncer(
+      dual ? input_asserted(second) : false,
+      dual ? second.debounce_ms : first.debounce_ms, now_ms());
+
+  bool first_stable = input_asserted(first);
+  bool second_stable = dual ? input_asserted(second) : false;
+  if (dual) {
+    opened_asserted.store(first_stable);
+    closed_asserted.store(second_stable);
+  } else if (operator_config.single_active_endpoint ==
+             gate::config::FeedbackEndpoint::kOpen) {
+    opened_asserted.store(first_stable);
+  } else {
+    closed_asserted.store(first_stable);
+  }
+
   while (true) {
     vTaskDelay(kSamplePeriod);
-    const SensorUpdate update = debouncer.update(sensor_active(), now_ms());
-    if (update.changed) {
-      stable_sensor_active.store(update.active);
-      ESP_LOGI(kTag, "Sensor GPIO %d stable raw=%d, state=%s",
-               sensor_config.gpio,
-               gpio_get_level(static_cast<gpio_num_t>(sensor_config.gpio)),
-               update.active ? "closed" : "not closed");
-      if (sensor_changed_callback != nullptr) {
-        sensor_changed_callback(update.active, sensor_changed_context);
+    bool changed = false;
+    const SensorUpdate first_update =
+        first_debouncer.update(input_asserted(first), now_ms());
+    if (first_update.changed) {
+      first_stable = first_update.active;
+      changed = true;
+    }
+    if (dual) {
+      const SensorUpdate second_update =
+          second_debouncer.update(input_asserted(second), now_ms());
+      if (second_update.changed) {
+        second_stable = second_update.active;
+        changed = true;
       }
+      opened_asserted.store(first_stable);
+      closed_asserted.store(second_stable);
+    } else if (operator_config.single_active_endpoint ==
+               gate::config::FeedbackEndpoint::kOpen) {
+      opened_asserted.store(first_stable);
+      closed_asserted.store(false);
+    } else {
+      opened_asserted.store(false);
+      closed_asserted.store(first_stable);
+    }
+    if (changed && feedback_callback != nullptr) {
+      feedback_callback(feedback_assertions(), feedback_context);
     }
   }
 }
@@ -69,81 +151,98 @@ void sensor_task(void*) {
 }  // namespace
 
 esp_err_t start_monitoring(const gate::config::AppConfig& config,
-                           SensorChangedCallback callback,
+                           FeedbackChangedCallback callback,
                            void* callback_context) {
   if (monitor_active.load()) return ESP_ERR_INVALID_STATE;
-  relay_config = config.relay;
-  const std::uint32_t inactive = relay_level(false);
-  const gpio_num_t relay_gpio = static_cast<gpio_num_t>(config.relay.gpio);
-  const gpio_num_t sensor_gpio = static_cast<gpio_num_t>(config.sensor.gpio);
-  // Set the output latch before enabling output mode to avoid an active glitch.
-  esp_err_t result = gpio_set_level(relay_gpio, inactive);
-  if (result != ESP_OK) return result;
-  result = gpio_set_direction(relay_gpio, GPIO_MODE_OUTPUT);
-  if (result != ESP_OK) return result;
-  result = gpio_set_level(relay_gpio, inactive);
-  if (result != ESP_OK) return result;
+  operator_config = config.gate_operator;
+  feedback_callback = callback;
+  feedback_context = callback_context;
 
-  sensor_config = config.sensor;
-  sensor_changed_callback = callback;
-  sensor_changed_context = callback_context;
-  result = gpio_set_direction(sensor_gpio, GPIO_MODE_INPUT);
-  if (result != ESP_OK) return result;
-  switch (sensor_config.pull) {
-    case gate::config::SensorPull::kUp:
-      result = gpio_set_pull_mode(sensor_gpio, GPIO_PULLUP_ONLY);
-      break;
-    case gate::config::SensorPull::kDown:
-      result = gpio_set_pull_mode(sensor_gpio, GPIO_PULLDOWN_ONLY);
-      break;
-    case gate::config::SensorPull::kNone:
-      result = gpio_set_pull_mode(sensor_gpio, GPIO_FLOATING);
-      break;
+  const gate::config::PulseOutputConfig* outputs[2]{};
+  std::size_t output_count = 0;
+  if (operator_config.profile == gate::config::OperatorProfile::kSequential) {
+    outputs[output_count++] = &operator_config.step;
+  } else {
+    outputs[output_count++] = &operator_config.open;
+    outputs[output_count++] = &operator_config.close;
   }
-  if (result != ESP_OK) return result;
+  for (std::size_t index = 0; index < output_count; ++index) {
+    const esp_err_t result = initialize_output(*outputs[index]);
+    if (result != ESP_OK) {
+      deactivate_all();
+      return result;
+    }
+  }
 
-  stable_sensor_active.store(sensor_active());
+  const bool dual = operator_config.feedback_topology ==
+                    gate::config::FeedbackTopology::kDual;
+  esp_err_t result = initialize_input(
+      dual ? operator_config.opened_feedback : operator_config.single_feedback);
+  if (result == ESP_OK && dual) {
+    result = initialize_input(operator_config.closed_feedback);
+  }
+  if (result != ESP_OK) {
+    deactivate_all();
+    return result;
+  }
 
-  if (xTaskCreate(sensor_task, "closed_sensor", 3072, nullptr, 5, nullptr) !=
+  if (xTaskCreate(feedback_task, "gate_feedback", 3072, nullptr, 5, nullptr) !=
       pdPASS) {
+    deactivate_all();
     return ESP_ERR_NO_MEM;
   }
   monitor_active.store(true);
-  ESP_LOGI(kTag,
-           "Relay GPIO %d initialized inactive at level %lu; runtime pulse driver ready",
-           config.relay.gpio, static_cast<unsigned long>(inactive));
+  ESP_LOGI(kTag, "Semantic gate I/O initialized with %lu output(s)",
+           static_cast<unsigned long>(output_count));
   return ESP_OK;
 }
 
 bool monitoring_active() { return monitor_active.load(); }
 
-bool feedback_active() { return stable_sensor_active.load(); }
+gate::controller::FeedbackAssertions feedback_assertions() {
+  return {opened_asserted.load(), closed_asserted.load()};
+}
 
-esp_err_t activate_relay() {
-  if (!monitor_active.load()) return ESP_ERR_INVALID_STATE;
-  bool expected = false;
-  if (!relay_is_active.compare_exchange_strong(expected, true)) {
+esp_err_t activate_command(gate::controller::ActuatorCommand command) {
+  if (!monitor_active.load() || command == gate::controller::ActuatorCommand::kNone) {
     return ESP_ERR_INVALID_STATE;
   }
-  const esp_err_t result = gpio_set_level(
-      static_cast<gpio_num_t>(relay_config.gpio), relay_level(true));
-  if (result != ESP_OK) {
-    relay_is_active.store(false);
-    gpio_set_level(static_cast<gpio_num_t>(relay_config.gpio),
-                   relay_level(false));
+  gate::controller::ActuatorCommand expected =
+      gate::controller::ActuatorCommand::kNone;
+  if (!current_command.compare_exchange_strong(expected, command)) {
+    return ESP_ERR_INVALID_STATE;
   }
+  const auto* selected = output_for(command);
+  if (selected == nullptr) {
+    current_command.store(gate::controller::ActuatorCommand::kNone);
+    return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t result = deactivate_all();
+  current_command.store(command);
+  if (result == ESP_OK) result = set_output(*selected, true);
+  if (result != ESP_OK) deactivate_all();
   return result;
 }
 
-esp_err_t deactivate_relay() {
-  if (relay_config.gpio < 0) return ESP_ERR_INVALID_STATE;
-  // Clear software state even when the GPIO call fails so a later fail-safe
-  // deactivation attempt is never suppressed as "already inactive".
-  relay_is_active.store(false);
-  return gpio_set_level(static_cast<gpio_num_t>(relay_config.gpio),
-                        relay_level(false));
+esp_err_t deactivate_all() {
+  current_command.store(gate::controller::ActuatorCommand::kNone);
+  esp_err_t first_error = ESP_OK;
+  const auto deactivate = [&first_error](
+                              const gate::config::PulseOutputConfig& output) {
+    const esp_err_t result = set_output(output, false);
+    if (first_error == ESP_OK && result != ESP_OK) first_error = result;
+  };
+  if (operator_config.profile == gate::config::OperatorProfile::kSequential) {
+    if (operator_config.step.gpio >= 0) deactivate(operator_config.step);
+  } else {
+    if (operator_config.open.gpio >= 0) deactivate(operator_config.open);
+    if (operator_config.close.gpio >= 0) deactivate(operator_config.close);
+  }
+  return first_error;
 }
 
-bool relay_active() { return relay_is_active.load(); }
+gate::controller::ActuatorCommand active_command() {
+  return current_command.load();
+}
 
 }  // namespace gate::hardware

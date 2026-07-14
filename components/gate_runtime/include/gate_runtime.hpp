@@ -16,9 +16,13 @@ enum class RequestResult {
 struct Snapshot {
   gate::controller::State state;
   gate::controller::Target target;
-  bool feedback_active;
+  gate::controller::MovementDirection movement;
+  gate::controller::EndpointObservation observation;
+  bool observation_valid;
+  gate::controller::ActuatorCommand active_command;
   bool pulse_active;
   bool obstruction;
+  gate::controller::FaultReason fault;
 };
 
 // Starts the single-owner reducer runtime.

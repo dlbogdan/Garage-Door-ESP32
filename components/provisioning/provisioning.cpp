@@ -292,31 +292,46 @@ esp_err_t config_handler(httpd_req_t* request) {
   if (!authenticated(request)) {
     return send_error(request, "401 Unauthorized", "Authentication required.");
   }
+  const auto& op = active_config.gate_operator;
+  const bool directional = op.profile == gate::config::OperatorProfile::kDirectional;
+  const bool dual = op.feedback_topology == gate::config::FeedbackTopology::kDual;
+  const auto& relay = directional ? op.open : op.step;
+  const auto& sensor = dual ? op.opened_feedback : op.single_feedback;
   const std::string response =
       "{\"displayName\":\"" + json_escape(active_config.homekit.display_name.c_str()) +
       "\",\"ssid\":\"" + json_escape(active_config.wifi.ssid.c_str()) +
-      "\",\"relayGpio\":" + std::to_string(active_config.relay.gpio) +
+      "\",\"schemaVersion\":3" +
+      ",\"operatorProfile\":\"" + std::string(directional ? "directional" : "sequential") + "\"" +
+      ",\"feedbackMode\":\"" + std::string(dual ? "dual" : "single") + "\"" +
+      ",\"legacyFlatConfigLossy\":" + std::string(directional || dual ? "true" : "false") +
+      ",\"relayGpio\":" + std::to_string(relay.gpio) +
       ",\"relayActiveHigh\":" +
-      std::string(active_config.relay.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
-      ",\"pulseMs\":" + std::to_string(active_config.relay.pulse_ms) +
-      ",\"sensorGpio\":" + std::to_string(active_config.sensor.gpio) +
+      std::string(relay.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"pulseMs\":" + std::to_string(relay.pulse_ms) +
+      ",\"openGpio\":" + std::to_string(op.open.gpio) +
+      ",\"openActiveHigh\":" + std::string(op.open.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"openPulseMs\":" + std::to_string(op.open.pulse_ms) +
+      ",\"closeGpio\":" + std::to_string(op.close.gpio) +
+      ",\"closeActiveHigh\":" + std::string(op.close.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"closePulseMs\":" + std::to_string(op.close.pulse_ms) +
+      ",\"sensorGpio\":" + std::to_string(sensor.gpio) +
       ",\"sensorActiveHigh\":" +
-      std::string(active_config.sensor.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      std::string(sensor.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
       ",\"sensorPull\":\"" +
-      std::string(active_config.sensor.pull == gate::config::SensorPull::kNone ? "none" :
-                   active_config.sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
+      std::string(sensor.pull == gate::config::SensorPull::kNone ? "none" :
+                   sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
       ",\"feedbackActiveEndpoint\":\"" +
-      std::string(active_config.sensor.active_endpoint ==
+      std::string(op.single_active_endpoint ==
                           gate::config::FeedbackEndpoint::kOpen
                       ? "open" : "closed") + "\"" +
       ",\"feedbackStabilityMs\":" +
-      std::to_string(active_config.sensor.endpoint_stability_ms) +
+      std::to_string(op.endpoint_stability_ms) +
       ",\"openingSeconds\":" + std::to_string(active_config.timing.opening_ms / 1000) +
       ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) +
       ",\"hardwareMonitoring\":" +
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
       ",\"feedbackActive\":" +
-      std::string(gate::hardware::feedback_active() ? "true" : "false") +
+      std::string((gate::hardware::feedback_assertions().opened || gate::hardware::feedback_assertions().closed) ? "true" : "false") +
       ",\"relayControlEnabled\":" +
       std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
@@ -328,11 +343,22 @@ esp_err_t runtime_handler(httpd_req_t* request) {
   if (!authenticated(request, false, false)) {
     return send_error(request, "401 Unauthorized", "Authentication required.");
   }
+  const auto state = gate::runtime::snapshot();
+  const auto assertions = gate::hardware::feedback_assertions();
   const std::string response =
       "{\"hardwareMonitoring\":" +
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
       ",\"feedbackActive\":" +
-      std::string(gate::hardware::feedback_active() ? "true" : "false") +
+      std::string((assertions.opened || assertions.closed) ? "true" : "false") +
+      ",\"openedAsserted\":" + std::string(assertions.opened ? "true" : "false") +
+      ",\"closedAsserted\":" + std::string(assertions.closed ? "true" : "false") +
+      ",\"observation\":\"" + std::string(state.observation_valid ? gate::controller::to_string(state.observation) : "UNKNOWN") + "\"" +
+      ",\"state\":\"" + std::string(gate::controller::to_string(state.state)) + "\"" +
+      ",\"target\":\"" + std::string(gate::controller::to_string(state.target)) + "\"" +
+      ",\"activeCommand\":\"" + std::string(gate::controller::to_string(state.active_command)) + "\"" +
+      ",\"pulseActive\":" + std::string(state.pulse_active ? "true" : "false") +
+      ",\"obstruction\":" + std::string(state.obstruction ? "true" : "false") +
+      ",\"faultReason\":\"" + std::string(gate::controller::to_string(state.fault)) + "\"" +
       ",\"relayControlEnabled\":" +
       std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
@@ -411,39 +437,114 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   int opening_seconds = 0;
   int closing_seconds = 0;
   int feedback_stability_ms = 0;
+  std::string operator_profile;
+  std::string feedback_mode;
+  const bool canonical = form_value(body, "operatorProfile", &operator_profile) ||
+                         form_value(body, "feedbackMode", &feedback_mode);
   if (!form_value(body, "displayName", &display_name) || display_name.empty() ||
       display_name.size() > 64 ||
-      !form_value(body, "relayLevel", &relay_level) ||
-      !form_value(body, "sensorLevel", &sensor_level) ||
-      !form_value(body, "sensorPull", &sensor_pull) ||
-      !form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
-      !parse_integer(body, "relayGpio", 0, 39, &relay_gpio) ||
-      !parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) ||
-      !parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) ||
       !parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) ||
       !parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) ||
       !parse_integer(body, "feedbackStabilityMs", 1000, 10000,
-                     &feedback_stability_ms) ||
-      (relay_level != "low" && relay_level != "high") ||
-      (sensor_level != "low" && sensor_level != "high") ||
-      (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down") ||
-      (feedback_endpoint != "open" && feedback_endpoint != "closed")) {
+                     &feedback_stability_ms)) {
     return send_error(request, "400 Bad Request",
                       "One or more settings have an invalid format.");
   }
 
   gate::config::AppConfig updated = active_config;
   updated.homekit.display_name = display_name;
-  updated.relay.gpio = relay_gpio;
-  updated.relay.active_level = parse_level(relay_level);
-  updated.relay.pulse_ms = pulse_ms;
-  updated.sensor.gpio = sensor_gpio;
-  updated.sensor.active_level = parse_level(sensor_level);
-  updated.sensor.pull = parse_pull(sensor_pull);
-  updated.sensor.active_endpoint =
-      feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
-                                  : gate::config::FeedbackEndpoint::kClosed;
-  updated.sensor.endpoint_stability_ms = feedback_stability_ms;
+  if (!canonical) {
+    if (!form_value(body, "relayLevel", &relay_level) ||
+        !form_value(body, "sensorLevel", &sensor_level) ||
+        !form_value(body, "sensorPull", &sensor_pull) ||
+        !form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
+        !parse_integer(body, "relayGpio", 0, 39, &relay_gpio) ||
+        !parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) ||
+        !parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) ||
+        (relay_level != "low" && relay_level != "high") ||
+        (sensor_level != "low" && sensor_level != "high") ||
+        (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down") ||
+        (feedback_endpoint != "open" && feedback_endpoint != "closed")) {
+      return send_error(request, "400 Bad Request", "Invalid legacy gate settings.");
+    }
+    updated.gate_operator.profile = gate::config::OperatorProfile::kSequential;
+    updated.gate_operator.feedback_topology = gate::config::FeedbackTopology::kSingle;
+    updated.gate_operator.step = {relay_gpio, parse_level(relay_level),
+                                  static_cast<std::uint32_t>(pulse_ms)};
+    updated.gate_operator.single_feedback = {
+        sensor_gpio, parse_level(sensor_level), parse_pull(sensor_pull), 50};
+    updated.gate_operator.single_active_endpoint =
+        feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
+                                    : gate::config::FeedbackEndpoint::kClosed;
+  } else {
+    if ((operator_profile != "sequential" && operator_profile != "directional") ||
+        (feedback_mode != "single" && feedback_mode != "dual")) {
+      return send_error(request, "400 Bad Request", "Invalid operator discriminators.");
+    }
+    updated.gate_operator.profile = operator_profile == "directional"
+        ? gate::config::OperatorProfile::kDirectional
+        : gate::config::OperatorProfile::kSequential;
+    updated.gate_operator.feedback_topology = feedback_mode == "dual"
+        ? gate::config::FeedbackTopology::kDual
+        : gate::config::FeedbackTopology::kSingle;
+
+    auto parse_output = [&](const char* gpio_name, const char* level_name,
+                            const char* pulse_name,
+                            gate::config::PulseOutputConfig* output) {
+      std::string level;
+      int gpio = -1;
+      int pulse = 0;
+      if (!parse_integer(body, gpio_name, 0, 39, &gpio) ||
+          !form_value(body, level_name, &level) ||
+          !parse_integer(body, pulse_name, 100, 2000, &pulse) ||
+          (level != "low" && level != "high")) return false;
+      *output = {gpio, parse_level(level), static_cast<std::uint32_t>(pulse)};
+      return true;
+    };
+    if (updated.gate_operator.profile == gate::config::OperatorProfile::kSequential) {
+      if (!parse_output("stepGpio", "stepLevel", "stepPulseMs",
+                        &updated.gate_operator.step)) {
+        return send_error(request, "400 Bad Request", "Invalid STEP output.");
+      }
+    } else if (!parse_output("openGpio", "openLevel", "openPulseMs",
+                             &updated.gate_operator.open) ||
+               !parse_output("closeGpio", "closeLevel", "closePulseMs",
+                             &updated.gate_operator.close)) {
+      return send_error(request, "400 Bad Request", "Invalid directional outputs.");
+    }
+
+    auto parse_input = [&](const char* gpio_name, const char* level_name,
+                           const char* pull_name,
+                           gate::config::FeedbackInputConfig* input) {
+      std::string level;
+      std::string pull;
+      int gpio = -1;
+      if (!parse_integer(body, gpio_name, 0, 39, &gpio) ||
+          !form_value(body, level_name, &level) ||
+          !form_value(body, pull_name, &pull) ||
+          (level != "low" && level != "high") ||
+          (pull != "none" && pull != "up" && pull != "down")) return false;
+      *input = {gpio, parse_level(level), parse_pull(pull), 50};
+      return true;
+    };
+    if (updated.gate_operator.feedback_topology == gate::config::FeedbackTopology::kSingle) {
+      if (!form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
+          (feedback_endpoint != "open" && feedback_endpoint != "closed") ||
+          !parse_input("sensorGpio", "sensorLevel", "sensorPull",
+                       &updated.gate_operator.single_feedback)) {
+        return send_error(request, "400 Bad Request", "Invalid single feedback input.");
+      }
+      updated.gate_operator.single_active_endpoint =
+          feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
+                                      : gate::config::FeedbackEndpoint::kClosed;
+    } else if (!parse_input("openedSensorGpio", "openedSensorLevel",
+                            "openedSensorPull", &updated.gate_operator.opened_feedback) ||
+               !parse_input("closedSensorGpio", "closedSensorLevel",
+                            "closedSensorPull", &updated.gate_operator.closed_feedback)) {
+      return send_error(request, "400 Bad Request", "Invalid dual feedback inputs.");
+    }
+  }
+  updated.gate_operator.endpoint_stability_ms = feedback_stability_ms;
   updated.timing.opening_ms = opening_seconds * 1000;
   updated.timing.closing_ms = closing_seconds * 1000;
   const auto errors = gate::config::validate(updated);
@@ -712,16 +813,16 @@ esp_err_t save_handler(httpd_req_t* request) {
   app_config.homekit.display_name = display_name;
   app_config.homekit.setup_code = setup_code;
   app_config.homekit.setup_id = setup_id;
-  app_config.relay.gpio = relay_gpio;
-  app_config.relay.active_level = parse_level(relay_level);
-  app_config.relay.pulse_ms = pulse_ms;
-  app_config.sensor.gpio = sensor_gpio;
-  app_config.sensor.active_level = parse_level(sensor_level);
-  app_config.sensor.pull = parse_pull(sensor_pull);
-  app_config.sensor.active_endpoint =
+  app_config.gate_operator.step.gpio = relay_gpio;
+  app_config.gate_operator.step.active_level = parse_level(relay_level);
+  app_config.gate_operator.step.pulse_ms = pulse_ms;
+  app_config.gate_operator.single_feedback.gpio = sensor_gpio;
+  app_config.gate_operator.single_feedback.active_level = parse_level(sensor_level);
+  app_config.gate_operator.single_feedback.pull = parse_pull(sensor_pull);
+  app_config.gate_operator.single_active_endpoint =
       feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
                                   : gate::config::FeedbackEndpoint::kClosed;
-  app_config.sensor.endpoint_stability_ms = feedback_stability_ms;
+  app_config.gate_operator.endpoint_stability_ms = feedback_stability_ms;
   app_config.timing.opening_ms = opening_seconds * 1000;
   app_config.timing.closing_ms = closing_seconds * 1000;
   esp_err_t result = gate::config::derive_admin_password(admin_password,

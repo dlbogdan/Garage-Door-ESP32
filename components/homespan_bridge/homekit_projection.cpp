@@ -20,7 +20,7 @@ Projection project(const gate::controller::Snapshot& snapshot) {
   return {current,
           snapshot.target == gate::controller::Target::kOpen ? kTargetOpen
                                                               : kTargetClosed,
-          snapshot.obstruction};
+          gate::controller::obstructed(snapshot)};
 }
 
 }  // namespace gate::homekit

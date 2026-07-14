@@ -58,6 +58,18 @@ bool is_provisioned(const AppConfig& config) {
   return validate(config).empty();
 }
 
+bool has_step_output(const OperatorConfig& config) {
+  return config.profile == OperatorProfile::kSequential;
+}
+
+bool has_open_output(const OperatorConfig& config) {
+  return config.profile == OperatorProfile::kDirectional;
+}
+
+bool has_close_output(const OperatorConfig& config) {
+  return config.profile == OperatorProfile::kDirectional;
+}
+
 std::vector<ValidationError> validate(const AppConfig& config) {
   std::vector<ValidationError> errors;
   if (config.schema_version != kSchemaVersion) {
@@ -92,34 +104,91 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     add_error(&errors, "homekit.setupId", "format",
               "Setup ID must be four uppercase letters or digits");
   }
-  if (!is_safe_gpio(config.relay.gpio, true)) {
-    add_error(&errors, "relay.gpio", "unsafe", "Unsafe relay GPIO");
+  const auto& operator_config = config.gate_operator;
+  const PulseOutputConfig* outputs[2]{};
+  const char* output_fields[2]{};
+  std::size_t output_count = 0;
+  if (operator_config.profile == OperatorProfile::kSequential) {
+    outputs[output_count] = &operator_config.step;
+    output_fields[output_count++] = "operator.actuators.step";
+  } else if (operator_config.profile == OperatorProfile::kDirectional) {
+    outputs[output_count] = &operator_config.open;
+    output_fields[output_count++] = "operator.actuators.open";
+    outputs[output_count] = &operator_config.close;
+    output_fields[output_count++] = "operator.actuators.close";
+  } else {
+    add_error(&errors, "operator.profile", "unsupported",
+              "Unsupported operator profile");
   }
-  if (!is_safe_gpio(config.sensor.gpio, false)) {
-    add_error(&errors, "sensor.gpio", "unsafe", "Unsafe sensor GPIO");
+
+  const FeedbackInputConfig* inputs[2]{};
+  const char* input_fields[2]{};
+  std::size_t input_count = 0;
+  if (operator_config.feedback_topology == FeedbackTopology::kSingle) {
+    inputs[input_count] = &operator_config.single_feedback;
+    input_fields[input_count++] = "operator.feedback.single";
+  } else if (operator_config.feedback_topology == FeedbackTopology::kDual) {
+    inputs[input_count] = &operator_config.opened_feedback;
+    input_fields[input_count++] = "operator.feedback.opened";
+    inputs[input_count] = &operator_config.closed_feedback;
+    input_fields[input_count++] = "operator.feedback.closed";
+  } else {
+    add_error(&errors, "operator.feedback.mode", "unsupported",
+              "Unsupported feedback topology");
   }
-  if (config.relay.gpio == config.sensor.gpio && config.relay.gpio >= 0) {
-    add_error(&errors, "sensor.gpio", "collision",
-              "Relay and sensor GPIOs must differ");
+
+  for (std::size_t index = 0; index < output_count; ++index) {
+    const auto& output = *outputs[index];
+    const std::string gpio_field = std::string(output_fields[index]) + ".gpio";
+    if (!is_safe_gpio(output.gpio, true)) {
+      errors.push_back({gpio_field, "unsafe", "Unsafe actuator GPIO"});
+    }
+    if (!in_range(output.pulse_ms, 100, 2000)) {
+      errors.push_back({std::string(output_fields[index]) + ".pulseMs", "range",
+                        "Pulse must be 100-2000 ms"});
+    }
   }
-  if (!in_range(config.relay.pulse_ms, 100, 2000)) {
-    add_error(&errors, "relay.pulseMs", "range", "Pulse must be 100-2000 ms");
-  }
-  if (!in_range(config.relay.minimum_interval_ms, 500, 10000)) {
-    add_error(&errors, "relay.minimumIntervalMs", "range",
+  if (!in_range(operator_config.minimum_interval_ms, 500, 10000)) {
+    add_error(&errors, "operator.minimumIntervalMs", "range",
               "Minimum interval must be 500-10000 ms");
   }
-  if (!in_range(config.sensor.debounce_ms, 10, 500)) {
-    add_error(&errors, "sensor.debounceMs", "range",
-              "Debounce must be 10-500 ms");
-  }
-  if (!in_range(config.sensor.endpoint_stability_ms, 1000, 10000)) {
-    add_error(&errors, "sensor.endpointStabilityMs", "range",
+  if (!in_range(operator_config.endpoint_stability_ms, 1000, 10000)) {
+    add_error(&errors, "operator.feedback.stabilityMs", "range",
               "Endpoint stability must be 1-10 seconds");
   }
-  if (config.sensor.gpio >= 34 && config.sensor.pull != SensorPull::kNone) {
-    add_error(&errors, "sensor.pull", "unsupported",
-              "GPIO34-39 do not support internal pulls");
+  for (std::size_t index = 0; index < input_count; ++index) {
+    const auto& input = *inputs[index];
+    const std::string base = input_fields[index];
+    if (!is_safe_gpio(input.gpio, false)) {
+      errors.push_back({base + ".gpio", "unsafe", "Unsafe feedback GPIO"});
+    }
+    if (!in_range(input.debounce_ms, 10, 500)) {
+      errors.push_back({base + ".debounceMs", "range",
+                        "Debounce must be 10-500 ms"});
+    }
+    if (input.gpio >= 34 && input.pull != SensorPull::kNone) {
+      errors.push_back({base + ".pull", "unsupported",
+                        "GPIO34-39 do not support internal pulls"});
+    }
+  }
+  for (std::size_t left = 0; left < output_count; ++left) {
+    for (std::size_t right = left + 1; right < output_count; ++right) {
+      if (outputs[left]->gpio >= 0 && outputs[left]->gpio == outputs[right]->gpio) {
+        errors.push_back({std::string(output_fields[right]) + ".gpio", "collision",
+                          "Actuator GPIOs must differ"});
+      }
+    }
+    for (std::size_t input = 0; input < input_count; ++input) {
+      if (outputs[left]->gpio >= 0 && outputs[left]->gpio == inputs[input]->gpio) {
+        errors.push_back({std::string(input_fields[input]) + ".gpio", "collision",
+                          "Actuator and feedback GPIOs must differ"});
+      }
+    }
+  }
+  if (input_count == 2 && inputs[0]->gpio >= 0 &&
+      inputs[0]->gpio == inputs[1]->gpio) {
+    errors.push_back({std::string(input_fields[1]) + ".gpio", "collision",
+                      "Feedback GPIOs must differ"});
   }
   if (!in_range(config.timing.opening_ms, 3000, 180000) ||
       !in_range(config.timing.closing_ms, 3000, 180000)) {

@@ -69,12 +69,48 @@ void arm(Deadline* deadline, std::uint32_t now, std::uint32_t duration_ms) {
   deadline->at_ms = now + duration_ms;
 }
 
-void sensor_changed(bool active, void* context) {
+gate::controller::OperatorProfile controller_profile() {
+  return runtime.config.gate_operator.profile ==
+                 gate::config::OperatorProfile::kDirectional
+             ? gate::controller::OperatorProfile::kDirectional
+             : gate::controller::OperatorProfile::kSequential;
+}
+
+gate::controller::FeedbackTopology controller_feedback_topology() {
+  return runtime.config.gate_operator.feedback_topology ==
+                 gate::config::FeedbackTopology::kDual
+             ? gate::controller::FeedbackTopology::kDual
+             : gate::controller::FeedbackTopology::kSingle;
+}
+
+gate::controller::Endpoint single_endpoint() {
+  return runtime.config.gate_operator.single_active_endpoint ==
+                 gate::config::FeedbackEndpoint::kOpen
+             ? gate::controller::Endpoint::kOpened
+             : gate::controller::Endpoint::kClosed;
+}
+
+gate::controller::OperatorCapabilities capabilities() {
+  const bool directional = controller_profile() ==
+                           gate::controller::OperatorProfile::kDirectional;
+  return {!directional, directional, directional,
+          controller_feedback_topology() ==
+              gate::controller::FeedbackTopology::kDual};
+}
+
+gate::controller::EndpointObservation normalize(
+    gate::controller::FeedbackAssertions assertions) {
+  return gate::controller::normalize_feedback(controller_feedback_topology(),
+                                               single_endpoint(), assertions);
+}
+
+void sensor_changed(gate::controller::FeedbackAssertions assertions,
+                    void* context) {
   auto* queue = static_cast<QueueHandle_t*>(context);
   const RuntimeMessage message{{
-      gate::controller::EventType::kFeedbackChanged,
+      gate::controller::EventType::kObservationChanged,
       gate::controller::Target::kOpen,
-      active}};
+      normalize(assertions)}};
   if (xQueueSend(*queue, &message, portMAX_DELAY) != pdPASS) {
     ESP_LOGE(kTag, "Could not enqueue closed-sensor transition");
   }
@@ -82,25 +118,36 @@ void sensor_changed(bool active, void* context) {
 
 RequestResult apply_event(const gate::controller::Event& event,
                           std::uint32_t now) {
-  const auto transition = gate::controller::reduce(runtime.snapshot, event);
+  const auto transition = gate::controller::reduce(
+      runtime.snapshot, event, {controller_profile(), capabilities()});
 
   // Pulse admission happens before snapshot commit. A rejected or failed pulse
   // therefore cannot falsely advance target/movement state.
-  if (transition.effects.start_pulse) {
+  if (transition.effects.actuator_command !=
+      gate::controller::ActuatorCommand::kNone) {
     if (!runtime.pulse_guard->can_start(now)) {
       ESP_LOGW(kTag, "Pulse rejected by overlap/minimum-interval guard");
       return RequestResult::kBusy;
     }
-    const esp_err_t result = gate::hardware::activate_relay();
+    const esp_err_t result = gate::hardware::activate_command(
+        transition.effects.actuator_command);
     if (result != ESP_OK) {
       ESP_LOGE(kTag, "Pulse activation failed: %s", esp_err_to_name(result));
-      gate::hardware::deactivate_relay();
+      gate::hardware::deactivate_all();
       return RequestResult::kHardwareError;
     }
     runtime.pulse_guard->mark_started(now);
-    arm(&runtime.pulse, now, runtime.config.relay.pulse_ms);
-    ESP_LOGW(kTag, "Relay pulse started for %lu ms",
-             static_cast<unsigned long>(runtime.config.relay.pulse_ms));
+    const auto& operator_config = runtime.config.gate_operator;
+    const auto& output =
+        transition.effects.actuator_command == gate::controller::ActuatorCommand::kStep
+            ? operator_config.step
+            : transition.effects.actuator_command == gate::controller::ActuatorCommand::kOpen
+                  ? operator_config.open
+                  : operator_config.close;
+    arm(&runtime.pulse, now, output.pulse_ms);
+    ESP_LOGW(kTag, "%s pulse started for %lu ms",
+             gate::controller::to_string(transition.effects.actuator_command),
+             static_cast<unsigned long>(output.pulse_ms));
   }
 
   taskENTER_CRITICAL(&snapshot_lock);
@@ -121,13 +168,14 @@ RequestResult apply_event(const gate::controller::Event& event,
   }
   if (transition.effects.start_feedback_stability_timer) {
     arm(&runtime.feedback_stability, now,
-        runtime.config.sensor.endpoint_stability_ms);
+        runtime.config.gate_operator.endpoint_stability_ms);
   }
-  ESP_LOGI(kTag, "Controller state=%s target=%s sensor=%d pulse=%d obstruction=%d",
+  ESP_LOGI(kTag, "Controller state=%s target=%s observation=%s valid=%d pulse=%d fault=%s",
            gate::controller::to_string(runtime.snapshot.state),
            gate::controller::to_string(runtime.snapshot.target),
-           runtime.snapshot.feedback_active, runtime.snapshot.pulse_active,
-           runtime.snapshot.obstruction);
+           gate::controller::to_string(runtime.snapshot.pending_observation),
+           runtime.snapshot.observation_valid, runtime.snapshot.pulse_active,
+           gate::controller::to_string(runtime.snapshot.fault));
   if (transition.command_result == gate::controller::CommandResult::kRejectedBusy) {
     return RequestResult::kBusy;
   }
@@ -137,7 +185,7 @@ RequestResult apply_event(const gate::controller::Event& event,
 void process_expired(std::uint32_t now) {
   if (runtime.pulse.active && reached(now, runtime.pulse.at_ms)) {
     runtime.pulse.active = false;
-    const esp_err_t result = gate::hardware::deactivate_relay();
+    const esp_err_t result = gate::hardware::deactivate_all();
     runtime.pulse_guard->mark_completed();
     if (result != ESP_OK) {
       ESP_LOGE(kTag, "Fail-safe relay deactivation failed: %s",
@@ -156,17 +204,9 @@ void process_expired(std::uint32_t now) {
   if (runtime.feedback_stability.active &&
       reached(now, runtime.feedback_stability.at_ms)) {
     runtime.feedback_stability.active = false;
-    const bool active = runtime.snapshot.feedback_active;
-    const bool active_means_open =
-        runtime.config.sensor.active_endpoint ==
-        gate::config::FeedbackEndpoint::kOpen;
-    const bool proved_open = active == active_means_open;
-    apply_event({proved_open ? gate::controller::EventType::kFeedbackProvedOpen
-                             : gate::controller::EventType::kFeedbackProvedClosed,
-                 proved_open ? gate::controller::Target::kOpen
-                             : gate::controller::Target::kClosed,
-                 active},
-                now);
+    apply_event({gate::controller::EventType::kObservationStable,
+                 gate::controller::Target::kOpen,
+                 runtime.snapshot.pending_observation}, now);
   }
 }
 
@@ -186,7 +226,7 @@ void controller_task(void*) {
   const std::uint32_t boot_ms = now_ms();
   apply_event({gate::controller::EventType::kBoot,
                gate::controller::Target::kOpen,
-               gate::hardware::feedback_active()},
+               normalize(gate::hardware::feedback_assertions())},
               boot_ms);
   runtime_active.store(true);
   while (true) {
@@ -212,7 +252,7 @@ esp_err_t start(const gate::config::AppConfig& config) {
   if (runtime.queue == nullptr) return ESP_ERR_NO_MEM;
   runtime.pulse_guard =
       new (std::nothrow) gate::controller::RelayPulseGuard(
-          config.relay.minimum_interval_ms);
+          config.gate_operator.minimum_interval_ms);
   if (runtime.pulse_guard == nullptr) {
     release_runtime_resources();
     return ESP_ERR_NO_MEM;
@@ -225,7 +265,7 @@ esp_err_t start(const gate::config::AppConfig& config) {
   }
   if (xTaskCreate(controller_task, "gate_controller", 4096, nullptr, 6,
                   nullptr) != pdPASS) {
-    gate::hardware::deactivate_relay();
+    gate::hardware::deactivate_all();
     // Sensor monitoring is already running and owns the callback context, so
     // its queue must remain valid. Treat this as a fail-safe terminal state;
     // no command API exists and the relay has been forced inactive.
@@ -270,8 +310,15 @@ Snapshot snapshot() {
   taskENTER_CRITICAL(&snapshot_lock);
   const gate::controller::Snapshot current = runtime.snapshot;
   taskEXIT_CRITICAL(&snapshot_lock);
-  return {current.state, current.target, current.feedback_active,
-          current.pulse_active, current.obstruction};
+  return {current.state,
+          current.target,
+          current.movement,
+          current.stable_observation,
+          current.observation_valid,
+          gate::hardware::active_command(),
+          current.pulse_active,
+          gate::controller::obstructed(current),
+          current.fault};
 }
 
 }  // namespace gate::runtime

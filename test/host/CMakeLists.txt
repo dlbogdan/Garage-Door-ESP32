@@ -5,6 +5,7 @@ enable_testing()
 add_executable(gate_controller_tests
   gate_controller_test.cpp
   ../../components/gate_controller/gate_controller.cpp
+  ../../components/gate_controller/operator_domain.cpp
 )
 target_include_directories(gate_controller_tests PRIVATE
   ../../components/gate_controller/include
@@ -12,6 +13,17 @@ target_include_directories(gate_controller_tests PRIVATE
 target_compile_features(gate_controller_tests PRIVATE cxx_std_17)
 target_compile_options(gate_controller_tests PRIVATE -Wall -Wextra -Werror)
 add_test(NAME gate_controller_tests COMMAND gate_controller_tests)
+
+add_executable(operator_domain_tests
+  operator_domain_test.cpp
+  ../../components/gate_controller/operator_domain.cpp
+)
+target_include_directories(operator_domain_tests PRIVATE
+  ../../components/gate_controller/include
+)
+target_compile_features(operator_domain_tests PRIVATE cxx_std_17)
+target_compile_options(operator_domain_tests PRIVATE -Wall -Wextra -Werror)
+add_test(NAME operator_domain_tests COMMAND operator_domain_tests)
 
 add_executable(app_config_tests
   app_config_test.cpp
@@ -49,6 +61,8 @@ add_test(NAME relay_pulse_guard_tests COMMAND relay_pulse_guard_tests)
 add_executable(homekit_projection_tests
   homekit_projection_test.cpp
   ../../components/homespan_bridge/homekit_projection.cpp
+  ../../components/gate_controller/gate_controller.cpp
+  ../../components/gate_controller/operator_domain.cpp
 )
 target_include_directories(homekit_projection_tests PRIVATE
   ../../components/gate_controller/include

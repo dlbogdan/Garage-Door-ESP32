@@ -2,6 +2,19 @@
 
 Last updated: 2026-07-14
 
+## Operator-profile implementation checkpoint
+
+- Implemented the approved architecture in [the operator-profile plan](../plans/operator-profile-architecture.md).
+- Configuration schema is now v3 at NVS key `config_v3`; valid v1/v2 configurations migrate automatically to the equivalent sequential/single-feedback profile.
+- The controller uses semantic `STEP`, `OPEN`, and `CLOSE` actuator commands and normalized `BETWEEN`, `OPENED`, `CLOSED`, and `CONTRADICTORY` observations. Absence of stable evidence is represented separately by observation validity.
+- Sequential and directional profiles share one reducer. Pure decision helpers select profile behavior; every reducer transition is proposed and committed atomically.
+- Movement direction and last movement direction are explicit reducer-owned invariants.
+- Hardware supports one STEP output or separate OPEN/CLOSE outputs and one endpoint input or coherent dual OPENED/CLOSED feedback.
+- Stable contradictory dual feedback cancels travel, reports STOPPED/obstruction, and interlocks target and maintenance commands without automatic recovery or replay.
+- Existing `/api/v1` routes remain in the current provisioning component; pending `web_auth` onward management extraction has not been mixed into this behavior work.
+- Host tests, Svelte checks/build, and ESP-IDF 5.5.4 firmware build pass. The pinned HomeSpan submodule remains unchanged.
+- Target/bench validation is still required before connecting directional outputs to a real operator.
+
 ## Repository state
 
 - Repository: `https://github.com/dlbogdan/Garage-Door-ESP32`

@@ -10,6 +10,8 @@
   let activeTab = $state('status');
   let pulsing = $state(false);
   let homekit = $state(null);
+  let operatorProfile = $state('sequential');
+  let feedbackMode = $state('single');
 
   async function loadDashboard() {
     try {
@@ -19,6 +21,8 @@
       const configResponse = await fetch('/api/v1/config', { cache: 'no-store' });
       if (!configResponse.ok) return;
       config = await configResponse.json();
+      operatorProfile = config.operatorProfile || 'sequential';
+      feedbackMode = config.feedbackMode || 'single';
       const homekitResponse = await fetch('/api/v1/homekit', { cache: 'no-store' });
       if (homekitResponse.ok) homekit = await homekitResponse.json();
       authenticated = true;
@@ -210,7 +214,28 @@
     {:else if activeTab === 'gate'}
       <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={() => { editing = !editing; message = ''; }}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
         {#if editing}
-          <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}><div class="grid"><label class="wide">Display name<input name="displayName" maxlength="64" value={config?.displayName} required /></label><label>Relay GPIO<input name="relayGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>Relay level<select name="relayLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Pulse duration<input name="pulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /><small>milliseconds</small></label><label>Feedback GPIO<input name="sensorGpio" type="number" min="0" max="39" value={config?.sensorGpio} required /></label><label>Electrical active level<select name="sensorLevel" value={config?.sensorActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Active means<select name="feedbackEndpoint" value={config?.feedbackActiveEndpoint}><option value="open">Gate open</option><option value="closed">Gate closed</option></select></label><label>Endpoint stability<input name="feedbackStabilityMs" type="number" min="1000" max="10000" value={config?.feedbackStabilityMs} required /><small>milliseconds; longer than movement blink</small></label><label>Sensor pull<select name="sensorPull" value={config?.sensorPull}><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label><label>Opening timeout<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /><small>seconds</small></label><label>Closing timeout<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /><small>seconds</small></label></div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button></form>
+          <div class="grid"><label>Operator profile<select bind:value={operatorProfile}><option value="sequential">One STEP input</option><option value="directional">Separate OPEN / CLOSE inputs</option></select></label><label>Feedback topology<select bind:value={feedbackMode}><option value="single">One endpoint input</option><option value="dual">Separate OPENED / CLOSED inputs</option></select></label></div>
+          <div class="warning" aria-live="polite">{operatorProfile === 'sequential' ? 'Wiring: ESP32 → relay → STEP input. Opposite travel commands pause and require a later explicit command to reverse.' : 'Wiring: ESP32 → OPEN relay → OPEN input; ESP32 → CLOSE relay → CLOSE input. Opposite travel commands pulse the requested direction immediately; use only with a safely reversing operator.'} {feedbackMode === 'dual' ? 'Dual feedback: neither input is BETWEEN; both asserted is a command-interlocking contradiction.' : 'Single feedback: one configured level identifies one endpoint.'}</div>
+          <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}>
+            <input type="hidden" name="operatorProfile" value={operatorProfile} />
+            <input type="hidden" name="feedbackMode" value={feedbackMode} />
+            <div class="grid">
+              <label class="wide">Display name<input name="displayName" maxlength="64" value={config?.displayName} required /></label>
+              {#if operatorProfile === 'sequential'}
+                <label>STEP GPIO<input name="stepGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>STEP level<select name="stepLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>STEP pulse<input name="stepPulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /></label>
+              {:else}
+                <label>OPEN GPIO<input name="openGpio" type="number" min="0" max="39" value={config?.openGpio} required /></label><label>OPEN level<select name="openLevel" value={config?.openActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>OPEN pulse<input name="openPulseMs" type="number" min="100" max="2000" value={config?.openPulseMs || 500} required /></label>
+                <label>CLOSE GPIO<input name="closeGpio" type="number" min="0" max="39" value={config?.closeGpio} required /></label><label>CLOSE level<select name="closeLevel" value={config?.closeActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>CLOSE pulse<input name="closePulseMs" type="number" min="100" max="2000" value={config?.closePulseMs || 500} required /></label>
+              {/if}
+              {#if feedbackMode === 'single'}
+                <label>Feedback GPIO<input name="sensorGpio" type="number" min="0" max="39" value={config?.sensorGpio} required /></label><label>Feedback level<select name="sensorLevel" value={config?.sensorActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Active means<select name="feedbackEndpoint" value={config?.feedbackActiveEndpoint}><option value="open">Gate open</option><option value="closed">Gate closed</option></select></label><label>Feedback pull<select name="sensorPull" value={config?.sensorPull}><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
+              {:else}
+                <label>OPENED GPIO<input name="openedSensorGpio" type="number" min="0" max="39" required /></label><label>OPENED level<select name="openedSensorLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>OPENED pull<select name="openedSensorPull"><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
+                <label>CLOSED GPIO<input name="closedSensorGpio" type="number" min="0" max="39" required /></label><label>CLOSED level<select name="closedSensorLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>CLOSED pull<select name="closedSensorPull"><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
+              {/if}
+              <label>Endpoint stability<input name="feedbackStabilityMs" type="number" min="1000" max="10000" value={config?.feedbackStabilityMs} required /></label><label>Opening timeout<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label><label>Closing timeout<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label>
+            </div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button>
+          </form>
         {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Sensor pull</dt><dd>{config?.sensorPull}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl><div class="warning">Bench test: this energizes relay GPIO {config?.relayGpio} once for {config?.pulseMs} ms.</div><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={testRelayPulse}>{pulsing ? 'Pulsing…' : 'Test relay pulse'}<span>→</span></button>{/if}
       </section>
     {:else}

@@ -26,8 +26,8 @@ AppConfig valid_config() {
   config.homekit.display_name = "Garage";
   config.homekit.setup_code = "48271635";
   config.homekit.setup_id = "G7T2";
-  config.relay.gpio = 25;
-  config.sensor.gpio = 27;
+  config.gate_operator.step.gpio = 25;
+  config.gate_operator.single_feedback.gpio = 27;
   config.admin.salt.assign(16, 0x12);
   config.admin.password_verifier.assign(32, 0x34);
   config.admin.pbkdf2_iterations = 60000;
@@ -59,13 +59,30 @@ void test_homekit_validation() {
 
 void test_gpio_validation() {
   auto config = valid_config();
-  config.relay.gpio = 34;
-  expect(has_field(gate::config::validate(config), "relay.gpio"),
-         "input-only pin must be rejected for relay");
+  config.gate_operator.step.gpio = 34;
+  expect(has_field(gate::config::validate(config), "operator.actuators.step.gpio"),
+          "input-only pin must be rejected for relay");
   config = valid_config();
-  config.sensor.gpio = config.relay.gpio;
-  expect(has_field(gate::config::validate(config), "sensor.gpio"),
-         "relay and sensor collision must be rejected");
+  config.gate_operator.single_feedback.gpio = config.gate_operator.step.gpio;
+  expect(has_field(gate::config::validate(config), "operator.feedback.single.gpio"),
+          "relay and sensor collision must be rejected");
+}
+
+void test_directional_dual_configuration() {
+  auto config = valid_config();
+  config.gate_operator.profile = gate::config::OperatorProfile::kDirectional;
+  config.gate_operator.open.gpio = 25;
+  config.gate_operator.close.gpio = 26;
+  config.gate_operator.feedback_topology = gate::config::FeedbackTopology::kDual;
+  config.gate_operator.opened_feedback.gpio = 27;
+  config.gate_operator.closed_feedback.gpio = 32;
+  expect(gate::config::validate(config).empty(),
+         "directional actuator with dual feedback must validate");
+
+  config.gate_operator.close.gpio = 25;
+  expect(has_field(gate::config::validate(config),
+                   "operator.actuators.close.gpio"),
+         "directional outputs must use distinct GPIOs");
 }
 
 void test_timing_and_admin_validation() {
@@ -84,6 +101,7 @@ int main() {
   test_complete_config_is_valid();
   test_homekit_validation();
   test_gpio_validation();
+  test_directional_dual_configuration();
   test_timing_and_admin_validation();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "All application configuration tests passed\n";

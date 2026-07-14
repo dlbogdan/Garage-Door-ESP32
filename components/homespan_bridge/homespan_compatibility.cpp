@@ -30,9 +30,14 @@ struct GarageDoorService : Service::GarageDoorOpener {
 
   void publish_runtime_state() {
     const gate::runtime::Snapshot state = gate::runtime::snapshot();
-    const gate::controller::Snapshot controller_state{
-        state.state, state.target, state.feedback_active, state.pulse_active,
-        state.obstruction};
+    gate::controller::Snapshot controller_state;
+    controller_state.state = state.state;
+    controller_state.target = state.target;
+    controller_state.movement = state.movement;
+    controller_state.stable_observation = state.observation;
+    controller_state.observation_valid = state.observation_valid;
+    controller_state.pulse_active = state.pulse_active;
+    controller_state.fault = state.fault;
     const Projection next = project(controller_state);
     if (current->getVal() != next.current) current->setVal(next.current);
     if (target->getVal() != next.target) target->setVal(next.target);
@@ -59,9 +64,14 @@ struct GarageDoorService : Service::GarageDoorOpener {
     // Do not set TargetDoorState here: HomeSpan still owns the in-flight target
     // write and commits it after update() returns.
     const gate::runtime::Snapshot state = gate::runtime::snapshot();
-    const gate::controller::Snapshot controller_state{
-        state.state, state.target, state.feedback_active, state.pulse_active,
-        state.obstruction};
+    gate::controller::Snapshot controller_state;
+    controller_state.state = state.state;
+    controller_state.target = state.target;
+    controller_state.movement = state.movement;
+    controller_state.stable_observation = state.observation;
+    controller_state.observation_valid = state.observation_valid;
+    controller_state.pulse_active = state.pulse_active;
+    controller_state.fault = state.fault;
     const Projection next = project(controller_state);
     if (current->getVal() != next.current) current->setVal(next.current);
     if (obstruction->getVal() != next.obstruction) {

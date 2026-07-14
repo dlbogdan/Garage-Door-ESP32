@@ -15,133 +15,145 @@ void expect(bool condition, const char* message) {
   }
 }
 
-Snapshot at(State state, Target target, bool feedback = false) {
-  return Snapshot{state, target, feedback, false, false};
+Snapshot at(State state, Target target) {
+  Snapshot snapshot;
+  snapshot.state = state;
+  snapshot.target = target;
+  if (state == State::kOpening) {
+    snapshot.movement = MovementDirection::kOpening;
+    snapshot.last_movement = MovementDirection::kOpening;
+  } else if (state == State::kClosing) {
+    snapshot.movement = MovementDirection::kClosing;
+    snapshot.last_movement = MovementDirection::kClosing;
+  } else if (state == State::kStoppedOpening) {
+    snapshot.last_movement = MovementDirection::kOpening;
+  } else if (state == State::kStoppedClosing) {
+    snapshot.last_movement = MovementDirection::kClosing;
+  }
+  return snapshot;
+}
+
+ReducerContext directional() {
+  return {OperatorProfile::kDirectional, {false, true, true, false}};
 }
 
 void test_boot_waits_for_stable_feedback() {
   const auto result = reduce(at(State::kOpening, Target::kOpen),
-                             {EventType::kBoot, Target::kOpen, true});
-  expect(result.next.state == State::kUnknownStopped,
-         "boot must remain unknown until feedback stability expires");
+                             {EventType::kBoot, Target::kOpen,
+                              EndpointObservation::kClosed});
+  expect(result.next.state == State::kUnknownStopped &&
+             !result.next.observation_valid,
+         "boot must remain unknown until observation stability expires");
   expect(result.effects.start_feedback_stability_timer,
          "boot must start endpoint stability timing");
-  expect(!result.effects.start_pulse, "boot must never pulse");
+  expect(result.effects.actuator_command == ActuatorCommand::kNone,
+         "boot must never command an actuator");
 }
 
-void test_endpoint_commands() {
-  auto result = reduce(at(State::kClosed, Target::kClosed),
+void test_sequential_pause_then_reverse() {
+  auto opened = reduce(at(State::kClosed, Target::kClosed),
                        {EventType::kTargetRequested, Target::kOpen});
-  expect(result.next.state == State::kOpening &&
-             result.next.target == Target::kOpen,
-         "open request from closed must report opening");
-  expect(result.effects.start_pulse && result.effects.start_opening_timer,
-         "open request must emit one pulse and arm timeout");
+  expect(opened.next.state == State::kOpening &&
+             opened.effects.actuator_command == ActuatorCommand::kStep,
+         "sequential open must emit STEP and report OPENING");
 
-  result = reduce(at(State::kOpen, Target::kOpen),
-                  {EventType::kTargetRequested, Target::kClosed});
-  expect(result.next.state == State::kClosing &&
-             result.next.target == Target::kClosed,
-         "close request from open must report closing");
-  expect(result.effects.start_pulse && result.effects.start_closing_timer,
-         "close request must emit one pulse and arm timeout");
-}
-
-void test_pause_then_reverse_requires_two_commands() {
   auto paused = reduce(at(State::kOpening, Target::kOpen),
                        {EventType::kTargetRequested, Target::kClosed});
-  expect(paused.next.state == State::kStoppedOpening,
-         "opposite request while opening must pause");
-  expect(paused.next.target == Target::kOpen,
-         "paused opening must retain OPEN target for a second CLOSED command");
-  expect(paused.effects.start_pulse && paused.effects.cancel_travel_timers,
-         "pause must use exactly one pulse and cancel timeout");
+  expect(paused.next.state == State::kStoppedOpening &&
+             paused.next.movement == MovementDirection::kNone &&
+             paused.next.last_movement == MovementDirection::kOpening,
+         "opposite sequential request must atomically stop and retain history");
+  expect(paused.next.target == Target::kOpen &&
+             paused.effects.actuator_command == ActuatorCommand::kStep,
+         "sequential pause must retain OPEN target and emit one STEP");
 
   paused.next.pulse_active = false;
-  auto reversed = reduce(paused.next,
-                         {EventType::kTargetRequested, Target::kClosed});
-  expect(reversed.next.state == State::kClosing &&
-             reversed.next.target == Target::kClosed,
-         "second closed request must reverse into closing");
-  expect(reversed.effects.start_pulse && reversed.effects.start_closing_timer,
-         "reverse must use exactly one new pulse");
-
-  paused = reduce(at(State::kClosing, Target::kClosed),
-                  {EventType::kTargetRequested, Target::kOpen});
-  expect(paused.next.state == State::kStoppedClosing &&
-             paused.next.target == Target::kClosed,
-         "opposite request while closing must pause and retain CLOSED target");
-  paused.next.pulse_active = false;
-  reversed = reduce(paused.next,
-                    {EventType::kTargetRequested, Target::kOpen});
-  expect(reversed.next.state == State::kOpening &&
-             reversed.next.target == Target::kOpen,
-         "second open request must reverse into opening");
-}
-
-void test_feedback_is_authoritative_only_after_proof_event() {
-  auto moving = at(State::kOpening, Target::kOpen);
-  auto result = reduce(moving, {EventType::kFeedbackChanged,
-                                Target::kOpen, true});
-  expect(result.next.state == State::kOpening,
-         "raw/debounced blink edge must not change movement state");
-  expect(result.effects.start_feedback_stability_timer,
-         "feedback edge must restart endpoint stability timing");
-
-  result = reduce(result.next, {EventType::kFeedbackProvedOpen,
-                                Target::kOpen, true});
-  expect(result.next.state == State::kOpen &&
-             result.next.target == Target::kOpen,
-         "stable open feedback must prove OPEN");
-  expect(result.effects.cancel_travel_timers,
-         "proved endpoint must cancel timeout");
-
-  result = reduce(at(State::kUnknownStopped, Target::kOpen),
-                  {EventType::kFeedbackProvedClosed,
-                   Target::kClosed, false});
-  expect(result.next.state == State::kClosed &&
-             result.next.target == Target::kClosed,
-         "stable closed feedback must prove CLOSED even after external movement");
-}
-
-void test_timeouts_stop_and_obstruct_without_pulse() {
-  auto result = reduce(at(State::kOpening, Target::kOpen),
-                       {EventType::kOpeningTimerExpired});
-  expect(result.next.state == State::kStoppedOpening && result.next.obstruction,
-         "opening timeout must stop and set obstruction");
-  expect(result.next.target == Target::kOpen && !result.effects.start_pulse,
-         "timeout must retain destination and never pulse");
-
-  result = reduce(at(State::kClosing, Target::kClosed),
-                  {EventType::kClosingTimerExpired});
-  expect(result.next.state == State::kStoppedClosing && result.next.obstruction,
-         "closing timeout must stop and set obstruction");
-  expect(result.next.target == Target::kClosed && !result.effects.start_pulse,
-         "closing timeout must retain destination and never pulse");
-}
-
-void test_busy_rejection_has_no_delayed_action() {
-  auto snapshot = at(State::kOpen, Target::kOpen);
-  snapshot.pulse_active = true;
-  const auto rejected = reduce(snapshot,
+  const auto reversed = reduce(paused.next,
                                {EventType::kTargetRequested, Target::kClosed});
-  expect(rejected.command_result == CommandResult::kRejectedBusy,
-         "busy command must be rejected");
-  expect(!rejected.effects.start_pulse && rejected.next.target == Target::kOpen,
-         "busy command must not alter target or pulse");
+  expect(reversed.next.state == State::kClosing &&
+             reversed.next.target == Target::kClosed &&
+             reversed.next.movement == MovementDirection::kClosing,
+         "second explicit sequential request must start closing atomically");
+  expect(reversed.effects.actuator_command == ActuatorCommand::kStep,
+         "sequential reverse must use one new STEP");
+}
+
+void test_directional_direct_reversal() {
+  const auto closing = reduce(at(State::kOpening, Target::kOpen),
+                              {EventType::kTargetRequested, Target::kClosed},
+                              directional());
+  expect(closing.next.state == State::kClosing &&
+             closing.next.target == Target::kClosed &&
+             closing.next.movement == MovementDirection::kClosing,
+         "directional opposite request must atomically report CLOSING");
+  expect(closing.effects.actuator_command == ActuatorCommand::kClose &&
+             closing.effects.start_closing_timer &&
+             closing.effects.cancel_travel_timers,
+         "directional reversal must emit exactly CLOSE and replace timer");
+}
+
+void test_observation_pipeline_and_contradiction() {
+  auto result = reduce(at(State::kOpening, Target::kOpen),
+                       {EventType::kObservationChanged, Target::kOpen,
+                        EndpointObservation::kOpened});
+  expect(result.next.state == State::kOpening &&
+             !result.next.observation_valid,
+         "pending observation must not change state");
+
+  result = reduce(result.next,
+                  {EventType::kObservationStable, Target::kOpen,
+                   EndpointObservation::kOpened});
+  expect(result.next.state == State::kOpen && result.next.observation_valid &&
+             result.next.movement == MovementDirection::kNone,
+         "stable OPENED must atomically prove endpoint");
+
+  auto moving = at(State::kClosing, Target::kClosed);
+  result = reduce(moving,
+                  {EventType::kObservationStable, Target::kOpen,
+                   EndpointObservation::kContradictory});
+  expect(result.next.state == State::kStoppedClosing &&
+             result.next.fault == FaultReason::kFeedbackContradiction &&
+             result.effects.cancel_travel_timers,
+         "contradiction must atomically stop, fault, and cancel travel");
+  const auto blocked = reduce(result.next,
+                              {EventType::kTargetRequested, Target::kOpen},
+                              directional());
+  expect(blocked.command_result == CommandResult::kRejectedBusy &&
+             blocked.effects.actuator_command == ActuatorCommand::kNone &&
+             blocked.next.state == result.next.state,
+         "contradiction must reject without partially changing snapshot");
+}
+
+void test_timeout_and_busy_are_atomic() {
+  const auto timed_out = reduce(at(State::kOpening, Target::kOpen),
+                                {EventType::kOpeningTimerExpired});
+  expect(timed_out.next.state == State::kStoppedOpening &&
+             timed_out.next.movement == MovementDirection::kNone &&
+             timed_out.next.fault == FaultReason::kTravelTimeout &&
+             timed_out.effects.actuator_command == ActuatorCommand::kNone,
+         "timeout must atomically stop/fault without command");
+
+  auto current = at(State::kOpen, Target::kOpen);
+  current.pulse_active = true;
+  const auto rejected = reduce(current,
+                               {EventType::kTargetRequested, Target::kClosed});
+  expect(rejected.command_result == CommandResult::kRejectedBusy &&
+             rejected.next.state == current.state &&
+             rejected.next.target == current.target &&
+             rejected.next.pulse_active == current.pulse_active,
+         "busy rejection must preserve complete committed snapshot");
   const auto completed = reduce(rejected.next, {EventType::kPulseCompleted});
-  expect(!completed.effects.start_pulse,
-         "pulse completion must not replay rejected command");
+  expect(completed.effects.actuator_command == ActuatorCommand::kNone,
+         "pulse completion must never replay rejected command");
 }
 }  // namespace
 
 int main() {
   test_boot_waits_for_stable_feedback();
-  test_endpoint_commands();
-  test_pause_then_reverse_requires_two_commands();
-  test_feedback_is_authoritative_only_after_proof_event();
-  test_timeouts_stop_and_obstruct_without_pulse();
-  test_busy_rejection_has_no_delayed_action();
+  test_sequential_pause_then_reverse();
+  test_directional_direct_reversal();
+  test_observation_pipeline_and_contradiction();
+  test_timeout_and_busy_are_atomic();
   if (failures) return EXIT_FAILURE;
   std::cout << "All gate controller tests passed\n";
   return EXIT_SUCCESS;

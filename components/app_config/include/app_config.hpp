@@ -6,11 +6,13 @@
 
 namespace gate::config {
 
-inline constexpr std::uint32_t kSchemaVersion = 2;
+inline constexpr std::uint32_t kSchemaVersion = 3;
 
 enum class ActiveLevel : std::uint8_t { kLow = 0, kHigh = 1 };
 enum class SensorPull : std::uint8_t { kNone = 0, kUp = 1, kDown = 2 };
 enum class FeedbackEndpoint : std::uint8_t { kOpen = 0, kClosed = 1 };
+enum class OperatorProfile : std::uint8_t { kSequential = 0, kDirectional = 1 };
+enum class FeedbackTopology : std::uint8_t { kSingle = 0, kDual = 1 };
 
 struct WifiConfig {
   std::string ssid;
@@ -29,19 +31,31 @@ struct HomeKitConfig {
   std::string setup_id;
 };
 
-struct RelayConfig {
+struct PulseOutputConfig {
   int gpio{-1};
   ActiveLevel active_level{ActiveLevel::kLow};
   std::uint32_t pulse_ms{500};
-  std::uint32_t minimum_interval_ms{1500};
 };
 
-struct SensorConfig {
+struct FeedbackInputConfig {
   int gpio{-1};
   ActiveLevel active_level{ActiveLevel::kLow};
   SensorPull pull{SensorPull::kUp};
   std::uint32_t debounce_ms{50};
-  FeedbackEndpoint active_endpoint{FeedbackEndpoint::kClosed};
+};
+
+struct OperatorConfig {
+  OperatorProfile profile{OperatorProfile::kSequential};
+  PulseOutputConfig step;
+  PulseOutputConfig open;
+  PulseOutputConfig close;
+  std::uint32_t minimum_interval_ms{1500};
+
+  FeedbackTopology feedback_topology{FeedbackTopology::kSingle};
+  FeedbackEndpoint single_active_endpoint{FeedbackEndpoint::kClosed};
+  FeedbackInputConfig single_feedback;
+  FeedbackInputConfig opened_feedback;
+  FeedbackInputConfig closed_feedback;
   std::uint32_t endpoint_stability_ms{2000};
 };
 
@@ -62,8 +76,7 @@ struct AppConfig {
   WifiConfig wifi;
   AccessPointConfig access_point;
   HomeKitConfig homekit;
-  RelayConfig relay;
-  SensorConfig sensor;
+  OperatorConfig gate_operator;
   TimingConfig timing;
   AdminConfig admin;
 };
@@ -79,5 +92,9 @@ bool is_provisioned(const AppConfig& config);
 bool is_safe_gpio(int gpio, bool output);
 bool is_valid_homekit_setup_code(const std::string& code);
 bool is_valid_homekit_setup_id(const std::string& setup_id);
+
+bool has_step_output(const OperatorConfig& config);
+bool has_open_output(const OperatorConfig& config);
+bool has_close_output(const OperatorConfig& config);
 
 }  // namespace gate::config
