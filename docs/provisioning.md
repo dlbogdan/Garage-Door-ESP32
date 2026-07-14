@@ -43,22 +43,43 @@ boot and retained in NVS across ordinary firmware restarts.
    bootstrap recovery credentials, restarts, and attempts to connect while
    keeping the setup AP available.
 10. The serial log reports `Station connected; setup AP remains active` after a
-   successful connection.
+    successful connection.
 
 Open networks are supported by leaving the password empty. Secured networks
 require an 8-63 character password. SSIDs are limited to 32 bytes.
+
+## Authenticated management
+
+After initial setup, open the portal and sign in with the administrator
+password. The dashboard is organized into five tabs:
+
+- **Status** shows connectivity, safe controller state, and recovery access.
+- **Access** changes the administrator password. The current password is
+  verified again, a fresh random salt and PBKDF2 verifier are persisted, and the
+  active session is invalidated. Sign in again with the new password.
+- **Network** migrates the controller to another Wi-Fi network. The
+  administrator password is required again. Both application and bootstrap
+  credential stores are updated before restart; the saved Wi-Fi password is
+  never returned to the browser.
+- **Gate** edits validated relay, feedback sensor, pulse, polarity, and travel
+  timing settings without changing secrets.
+- **Logs** identifies the location reserved for a future redacted event log.
+
+If a newly configured Wi-Fi network cannot be reached, join the persistent
+`GateSetup-XXXXXX` fallback AP and open `http://192.168.4.1/`. The fallback AP
+credentials are not changed during station Wi-Fi migration.
 
 ## Current limitations
 
 - The captive DNS responder and setup AP remain active after station connection
   in this development milestone. A later authenticated management flow will
   stop the fallback AP after a stable connection.
-- The current HTML portal does not yet scan nearby networks or test credentials
-  before restarting.
+- The Svelte portal does not yet scan nearby networks or test credentials before
+  restarting.
 - Bootstrap recovery credentials are stored separately and are also copied into
   the complete validated application configuration.
-- Once a complete configuration is saved, unauthenticated editing is disabled.
-  The portal becomes status-only until authenticated management is implemented.
+- Static IP, custom DNS, hostname, Apple Home pairing QR management, and
+  persistent event logs are displayed as planned areas but are not implemented.
 - Local portal traffic is HTTP. The WPA2 setup AP protects the first-boot radio
   link, but HTTPS is not implemented.
 - No relay or sensor GPIO is initialized. Flashing this milestone cannot issue

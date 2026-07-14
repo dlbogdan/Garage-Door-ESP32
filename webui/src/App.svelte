@@ -6,6 +6,8 @@
   let authenticated = $state(false);
   let csrf = $state('');
   let config = $state(null);
+  let editing = $state(false);
+  let activeTab = $state('status');
 
   async function loadDashboard() {
     try {
@@ -77,6 +79,68 @@
     else message = 'The controller is restarting…';
   }
 
+  async function saveSettings(event) {
+    saving = true; message = 'Validating settings…';
+    const data = new FormData(event.currentTarget);
+    const body = new URLSearchParams();
+    for (const [key, value] of data) body.set(key, String(value));
+    try {
+      const response = await fetch('/api/v1/config', {
+        method: 'PUT', headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      });
+      if (!response.ok) throw new Error(await response.text());
+      message = 'Settings saved safely.';
+      editing = false;
+      await loadDashboard();
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not save settings.'; }
+    saving = false;
+  }
+
+  async function changePassword(event) {
+    saving = true; message = 'Changing administrator password…';
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const newPassword = String(data.get('newPassword') || '');
+    const confirmation = String(data.get('confirmation') || '');
+    if (newPassword !== confirmation) {
+      message = 'New passwords do not match.'; saving = false; return;
+    }
+    try {
+      const response = await fetch('/api/v1/access/password', {
+        method: 'PUT',
+        headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          currentPassword: String(data.get('currentPassword') || ''),
+          newPassword,
+          confirmation
+        })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      form.reset();
+      authenticated = false; config = null; csrf = '';
+      message = 'Password changed. Sign in with the new password.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not change password.'; }
+    saving = false;
+  }
+
+  async function saveWifiNetwork(event) {
+    saving = true; message = 'Saving the new Wi-Fi network…';
+    const data = new FormData(event.currentTarget);
+    try {
+      const response = await fetch('/api/v1/network/wifi', {
+        method: 'PUT',
+        headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          ssid: String(data.get('ssid') || ''),
+          wifiPassword: String(data.get('wifiPassword') || ''),
+          adminPassword: String(data.get('adminPassword') || '')
+        })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      message = 'Network saved. The controller is restarting; reconnect using the new network or the fallback setup AP.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not change Wi-Fi.'; saving = false; }
+  }
+
   loadStatus();
 </script>
 
@@ -99,8 +163,30 @@
     </section>
   {:else if status.provisioned}
     <section class="intro"><div><p class="eyebrow">Management dashboard</p><h2>{config?.displayName || 'Garage controller'}</h2><p>Live connectivity and redacted device configuration.</p></div><button class="secondary" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button></section>
-    <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><p>Controller state</p><strong>Safe / stopped</strong><small>Relay disabled</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
-    <section class="card"><div class="section-title"><span>IO</span><div><h3>Configured hardware</h3><p>Secrets are never returned by the API.</p></div></div><dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl></section>
+    <nav class="tabs" aria-label="Controller settings">
+      {#each [['status','Status'],['access','Access'],['network','Network'],['gate','Gate'],['logs','Logs']] as tab}
+        <button class:active={activeTab === tab[0]} onclick={() => { activeTab = tab[0]; message = ''; }}>{tab[1]}</button>
+      {/each}
+    </nav>
+
+    {#if activeTab === 'status'}
+      <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><p>Controller state</p><strong>Safe / stopped</strong><small>Relay disabled</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
+      <section class="card"><div class="section-title"><span>ST</span><div><h3>System status</h3><p>Current firmware milestone and safety posture.</p></div></div><dl class="settings"><div><dt>Configuration</dt><dd>Valid and protected</dd></div><div><dt>Relay output</dt><dd>Disabled in firmware</dd></div><div><dt>Fallback recovery</dt><dd>Always available</dd></div></dl></section>
+    {:else if activeTab === 'access'}
+      <section class="card"><div class="section-title"><span>PW</span><div><h3>Administrator password</h3><p>Changing it signs out every active browser session.</p></div></div><form onsubmit={(event) => { event.preventDefault(); changePassword(event); }}><div class="grid"><label class="wide">Current password<input name="currentPassword" type="password" required autocomplete="current-password" /></label><label>New password<input name="newPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label><label>Confirm new password<input name="confirmation" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label></div><button class="primary" disabled={saving}>{saving ? 'Changing…' : 'Change password'}<span>→</span></button></form></section>
+      <section class="card muted-card"><div class="section-title"><span>HK</span><div><h3>Apple Home access</h3><p>Pairing PIN and QR-code management will appear here when the HomeSpan runtime is enabled.</p></div><span class="badge">Planned</span></div><p class="hint">Setup secrets remain stored locally and are never returned by the management API.</p></section>
+    {:else if activeTab === 'network'}
+      <section class="card"><div class="section-title"><span>WF</span><div><h3>Wi-Fi network</h3><p>Current network: <strong>{config?.ssid}</strong></p></div></div><form onsubmit={(event) => { event.preventDefault(); saveWifiNetwork(event); }}><div class="grid"><label>New Wi-Fi name<input name="ssid" maxlength="32" required autocomplete="off" /></label><label>New Wi-Fi password<input name="wifiPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password" /><small>Leave empty only for an open network.</small></label><label class="wide">Administrator password<input name="adminPassword" type="password" required autocomplete="current-password" /><small>Required to authorize a network migration.</small></label></div><div class="warning">The controller restarts after saving. If the new network cannot be reached, connect to <strong>{status.apSsid}</strong> and open 192.168.4.1.</div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save network & restart'}<span>→</span></button></form></section>
+      <section class="card muted-card"><div class="section-title"><span>IP</span><div><h3>IP configuration</h3><p>DHCP is currently automatic. Static IP, DNS, and hostname controls require a future schema migration.</p></div><span class="badge">DHCP</span></div></section>
+    {:else if activeTab === 'gate'}
+      <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={() => { editing = !editing; message = ''; }}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
+        {#if editing}
+          <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}><div class="grid"><label class="wide">Display name<input name="displayName" maxlength="64" value={config?.displayName} required /></label><label>Relay GPIO<input name="relayGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>Relay level<select name="relayLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Pulse duration<input name="pulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /><small>milliseconds</small></label><label>Sensor GPIO<input name="sensorGpio" type="number" min="0" max="39" value={config?.sensorGpio} required /></label><label>Sensor level<select name="sensorLevel" value={config?.sensorActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Sensor pull<select name="sensorPull" value={config?.sensorPull}><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label><label>Opening time<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /><small>seconds</small></label><label>Closing time<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /><small>seconds</small></label></div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button></form>
+        {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Sensor pull</dt><dd>{config?.sensorPull}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl>{/if}
+      </section>
+    {:else}
+      <section class="card empty-state"><div class="success-icon">≡</div><h3>Event logs</h3><p>Persistent redacted event logging is not implemented yet. Runtime diagnostics remain available through the ESP32 serial monitor.</p><span class="badge">Planned</span></section>
+    {/if}
     {#if message}<p class="message">{message}</p>{/if}<button class="danger" onclick={() => mutate('/api/v1/system/reboot')}>Restart controller</button>
   {:else}
     <form onsubmit={(event) => { event.preventDefault(); submit(event); }}>

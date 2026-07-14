@@ -300,12 +300,12 @@ esp_err_t root_handler(httpd_req_t* request) {
 
 esp_err_t javascript_handler(httpd_req_t* request) {
   return send_asset(request, "text/javascript; charset=utf-8", app_js_start,
-                    app_js_end, true);
+                    app_js_end, false);
 }
 
 esp_err_t stylesheet_handler(httpd_req_t* request) {
   return send_asset(request, "text/css; charset=utf-8", app_css_start,
-                    app_css_end, true);
+                    app_css_end, false);
 }
 
 esp_err_t status_handler(httpd_req_t* request) {
@@ -378,11 +378,231 @@ esp_err_t config_handler(httpd_req_t* request) {
       ",\"sensorGpio\":" + std::to_string(active_config.sensor.gpio) +
       ",\"sensorActiveHigh\":" +
       std::string(active_config.sensor.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"sensorPull\":\"" +
+      std::string(active_config.sensor.pull == gate::config::SensorPull::kNone ? "none" :
+                  active_config.sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
       ",\"openingSeconds\":" + std::to_string(active_config.timing.opening_ms / 1000) +
       ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) + "}";
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t update_config_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  if (request->content_len <= 0 || request->content_len > 1024) {
+    return send_error(request, "400 Bad Request", "Invalid settings request.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+
+  std::string display_name;
+  std::string relay_level;
+  std::string sensor_level;
+  std::string sensor_pull;
+  int relay_gpio = -1;
+  int sensor_gpio = -1;
+  int pulse_ms = 0;
+  int opening_seconds = 0;
+  int closing_seconds = 0;
+  if (!form_value(body, "displayName", &display_name) || display_name.empty() ||
+      display_name.size() > 64 ||
+      !form_value(body, "relayLevel", &relay_level) ||
+      !form_value(body, "sensorLevel", &sensor_level) ||
+      !form_value(body, "sensorPull", &sensor_pull) ||
+      !parse_integer(body, "relayGpio", 0, 39, &relay_gpio) ||
+      !parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) ||
+      !parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) ||
+      !parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) ||
+      !parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) ||
+      (relay_level != "low" && relay_level != "high") ||
+      (sensor_level != "low" && sensor_level != "high") ||
+      (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down")) {
+    return send_error(request, "400 Bad Request",
+                      "One or more settings have an invalid format.");
+  }
+
+  gate::config::AppConfig updated = active_config;
+  updated.homekit.display_name = display_name;
+  updated.relay.gpio = relay_gpio;
+  updated.relay.active_level = parse_level(relay_level);
+  updated.relay.pulse_ms = pulse_ms;
+  updated.sensor.gpio = sensor_gpio;
+  updated.sensor.active_level = parse_level(sensor_level);
+  updated.sensor.pull = parse_pull(sensor_pull);
+  updated.timing.opening_ms = opening_seconds * 1000;
+  updated.timing.closing_ms = closing_seconds * 1000;
+  const auto errors = gate::config::validate(updated);
+  if (!errors.empty()) {
+    return send_error(request, "400 Bad Request",
+                      errors.front().field + ": " + errors.front().message);
+  }
+  const esp_err_t result = gate::config::ConfigRepository().save(updated);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to save authenticated settings: %s",
+             esp_err_to_name(result));
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist settings.");
+  }
+  active_config = std::move(updated);
+  httpd_resp_set_type(request, "application/json");
+  return httpd_resp_sendstr(request, "{\"saved\":true}");
+}
+
+esp_err_t password_change_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  if (request->content_len <= 0 || request->content_len > 512) {
+    return send_error(request, "400 Bad Request", "Invalid password request.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+
+  std::string current_password;
+  std::string new_password;
+  std::string confirmation;
+  const bool valid_format =
+      form_value(body, "currentPassword", &current_password) &&
+      form_value(body, "newPassword", &new_password) &&
+      form_value(body, "confirmation", &confirmation) &&
+      new_password.size() >= 10 && new_password.size() <= 128 &&
+      new_password == confirmation;
+  std::fill(confirmation.begin(), confirmation.end(), '\0');
+  if (!valid_format) {
+    std::fill(current_password.begin(), current_password.end(), '\0');
+    std::fill(new_password.begin(), new_password.end(), '\0');
+    return send_error(request, "400 Bad Request",
+                      "New passwords must match and contain 10-128 characters.");
+  }
+  if (!gate::config::verify_admin_password(current_password,
+                                            active_config.admin)) {
+    std::fill(current_password.begin(), current_password.end(), '\0');
+    std::fill(new_password.begin(), new_password.end(), '\0');
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return send_error(request, "401 Unauthorized",
+                      "Current administrator password is incorrect.");
+  }
+  std::fill(current_password.begin(), current_password.end(), '\0');
+
+  gate::config::AppConfig updated = active_config;
+  esp_err_t result = gate::config::derive_admin_password(new_password,
+                                                          &updated.admin);
+  std::fill(new_password.begin(), new_password.end(), '\0');
+  if (result != ESP_OK) {
+    return send_error(request, "500 Internal Server Error",
+                      "Could not derive new administrator credentials.");
+  }
+  result = gate::config::ConfigRepository().save(updated);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to save administrator password: %s",
+             esp_err_to_name(result));
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist the new password.");
+  }
+
+  active_config = std::move(updated);
+  session = {};
+  httpd_resp_set_hdr(request, "Set-Cookie",
+                     "gate_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+  httpd_resp_set_type(request, "application/json");
+  return httpd_resp_sendstr(request, "{\"changed\":true}");
+}
+
+esp_err_t wifi_change_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  if (request->content_len <= 0 || request->content_len > 512) {
+    return send_error(request, "400 Bad Request", "Invalid network request.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+
+  std::string ssid;
+  std::string wifi_password;
+  std::string admin_password;
+  const bool valid_format =
+      form_value(body, "ssid", &ssid) &&
+      form_value(body, "wifiPassword", &wifi_password) &&
+      form_value(body, "adminPassword", &admin_password) &&
+      !ssid.empty() && ssid.size() <= 32 && wifi_password.size() <= 63 &&
+      (wifi_password.empty() || wifi_password.size() >= 8);
+  if (!valid_format) {
+    std::fill(wifi_password.begin(), wifi_password.end(), '\0');
+    std::fill(admin_password.begin(), admin_password.end(), '\0');
+    return send_error(request, "400 Bad Request",
+                      "Enter an SSID and either no password or 8-63 characters.");
+  }
+  if (!gate::config::verify_admin_password(admin_password,
+                                            active_config.admin)) {
+    std::fill(wifi_password.begin(), wifi_password.end(), '\0');
+    std::fill(admin_password.begin(), admin_password.end(), '\0');
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return send_error(request, "401 Unauthorized",
+                      "Administrator password is incorrect.");
+  }
+  std::fill(admin_password.begin(), admin_password.end(), '\0');
+
+  gate::config::AppConfig previous = active_config;
+  gate::config::AppConfig updated = active_config;
+  updated.wifi.ssid = ssid;
+  updated.wifi.password = wifi_password;
+  const auto errors = gate::config::validate(updated);
+  if (!errors.empty()) {
+    std::fill(wifi_password.begin(), wifi_password.end(), '\0');
+    return send_error(request, "400 Bad Request",
+                      errors.front().field + ": " + errors.front().message);
+  }
+
+  esp_err_t result = gate::config::ConfigRepository().save(updated);
+  if (result != ESP_OK) {
+    std::fill(wifi_password.begin(), wifi_password.end(), '\0');
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist the network configuration.");
+  }
+
+  const BootstrapCredentials previous_credentials = credentials;
+  copy_string(credentials.station_ssid, ssid);
+  copy_string(credentials.station_password, wifi_password);
+  std::fill(wifi_password.begin(), wifi_password.end(), '\0');
+  result = save_credentials();
+  if (result != ESP_OK) {
+    credentials = previous_credentials;
+    const esp_err_t rollback = gate::config::ConfigRepository().save(previous);
+    if (rollback != ESP_OK) {
+      ESP_LOGE(kTag, "Wi-Fi update rollback failed: %s",
+               esp_err_to_name(rollback));
+    }
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist bootstrap network credentials.");
+  }
+
+  active_config = std::move(updated);
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_sendstr(request, "{\"saved\":true,\"restarting\":true}");
+  xTaskCreate(restart_task, "network_restart", 2048, nullptr, 5, nullptr);
+  return ESP_OK;
 }
 
 esp_err_t logout_handler(httpd_req_t* request) {
@@ -635,6 +855,14 @@ esp_err_t start_http_server() {
                                    .handler = session_handler, .user_ctx = nullptr};
   const httpd_uri_t config_api{.uri = "/api/v1/config", .method = HTTP_GET,
                                .handler = config_handler, .user_ctx = nullptr};
+  const httpd_uri_t update_config{.uri = "/api/v1/config", .method = HTTP_PUT,
+                                  .handler = update_config_handler, .user_ctx = nullptr};
+  const httpd_uri_t change_password{
+      .uri = "/api/v1/access/password", .method = HTTP_PUT,
+      .handler = password_change_handler, .user_ctx = nullptr};
+  const httpd_uri_t change_wifi{
+      .uri = "/api/v1/network/wifi", .method = HTTP_PUT,
+      .handler = wifi_change_handler, .user_ctx = nullptr};
   const httpd_uri_t logout{.uri = "/api/v1/session/logout", .method = HTTP_POST,
                            .handler = logout_handler, .user_ctx = nullptr};
   const httpd_uri_t reboot{.uri = "/api/v1/system/reboot", .method = HTTP_POST,
@@ -650,6 +878,9 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &login)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &session_status)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &config_api)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &update_config)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &change_password)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &change_wifi)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &logout)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &reboot)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &save)) != ESP_OK ||
