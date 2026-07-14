@@ -19,6 +19,7 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -50,6 +51,21 @@ char access_point_ssid[24]{};
 httpd_handle_t server = nullptr;
 bool station_connected = false;
 bool application_provisioned = false;
+gate::config::AppConfig active_config;
+
+void restart_task(void*);
+
+struct Session {
+  bool active{false};
+  std::string token;
+  std::string csrf;
+  std::int64_t created_us{0};
+  std::int64_t last_seen_us{0};
+};
+
+Session session;
+constexpr std::int64_t kSessionIdleUs = 30LL * 60 * 1000000;
+constexpr std::int64_t kSessionAbsoluteUs = 8LL * 60 * 60 * 1000000;
 
 extern const unsigned char index_html_start[] asm("_binary_index_html_start");
 extern const unsigned char index_html_end[] asm("_binary_index_html_end");
@@ -210,6 +226,73 @@ std::string json_escape(const char* input) {
   return output;
 }
 
+std::string random_hex(std::size_t bytes) {
+  constexpr char hex[] = "0123456789abcdef";
+  std::string output(bytes * 2, '0');
+  for (std::size_t index = 0; index < bytes; ++index) {
+    const std::uint8_t value = static_cast<std::uint8_t>(esp_random());
+    output[index * 2] = hex[value >> 4];
+    output[index * 2 + 1] = hex[value & 0x0f];
+  }
+  return output;
+}
+
+bool constant_time_equal(const std::string& left, const std::string& right) {
+  if (left.size() != right.size()) return false;
+  std::uint8_t difference = 0;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    difference |= static_cast<std::uint8_t>(left[index] ^ right[index]);
+  }
+  return difference == 0;
+}
+
+bool request_cookie(httpd_req_t* request, const char* name, std::string* value) {
+  const std::size_t length = httpd_req_get_hdr_value_len(request, "Cookie");
+  if (length == 0 || length > 512) return false;
+  std::string cookies(length + 1, '\0');
+  if (httpd_req_get_hdr_value_str(request, "Cookie", cookies.data(),
+                                  cookies.size()) != ESP_OK) return false;
+  cookies.resize(length);
+  const std::string prefix = std::string(name) + "=";
+  std::size_t start = 0;
+  while (start < cookies.size()) {
+    while (start < cookies.size() && cookies[start] == ' ') ++start;
+    const std::size_t end = cookies.find(';', start);
+    const std::string item = cookies.substr(start, end - start);
+    if (item.rfind(prefix, 0) == 0) {
+      *value = item.substr(prefix.size());
+      return true;
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
+bool authenticated(httpd_req_t* request, bool require_csrf = false) {
+  const std::int64_t now = esp_timer_get_time();
+  if (!session.active || now - session.last_seen_us > kSessionIdleUs ||
+      now - session.created_us > kSessionAbsoluteUs) {
+    session = {};
+    return false;
+  }
+  std::string token;
+  if (!request_cookie(request, "gate_session", &token) ||
+      !constant_time_equal(token, session.token)) return false;
+  if (require_csrf) {
+    const std::size_t length =
+        httpd_req_get_hdr_value_len(request, "X-CSRF-Token");
+    if (length == 0 || length > 128) return false;
+    std::string csrf(length + 1, '\0');
+    if (httpd_req_get_hdr_value_str(request, "X-CSRF-Token", csrf.data(),
+                                    csrf.size()) != ESP_OK) return false;
+    csrf.resize(length);
+    if (!constant_time_equal(csrf, session.csrf)) return false;
+  }
+  session.last_seen_us = now;
+  return true;
+}
+
 esp_err_t root_handler(httpd_req_t* request) {
   return send_asset(request, "text/html; charset=utf-8", index_html_start,
                     index_html_end, false);
@@ -235,6 +318,91 @@ esp_err_t status_handler(httpd_req_t* request) {
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t login_handler(httpd_req_t* request) {
+  if (!application_provisioned) {
+    return send_error(request, "409 Conflict", "Device is not provisioned.");
+  }
+  if (request->content_len <= 0 || request->content_len > 256) {
+    return send_error(request, "400 Bad Request", "Invalid login request.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+  std::string password;
+  if (!form_value(body, "password", &password) ||
+      !gate::config::verify_admin_password(password, active_config.admin)) {
+    std::fill(password.begin(), password.end(), '\0');
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return send_error(request, "401 Unauthorized", "Incorrect password.");
+  }
+  std::fill(password.begin(), password.end(), '\0');
+  const std::int64_t now = esp_timer_get_time();
+  session = {true, random_hex(32), random_hex(24), now, now};
+  const std::string cookie = "gate_session=" + session.token +
+      "; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800";
+  httpd_resp_set_hdr(request, "Set-Cookie", cookie.c_str());
+  httpd_resp_set_type(request, "application/json");
+  const std::string response = "{\"csrf\":\"" + session.csrf + "\"}";
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t session_handler(httpd_req_t* request) {
+  if (!authenticated(request)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  const std::string response = "{\"authenticated\":true,\"csrf\":\"" +
+                               session.csrf + "\"}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t config_handler(httpd_req_t* request) {
+  if (!authenticated(request)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  const std::string response =
+      "{\"displayName\":\"" + json_escape(active_config.homekit.display_name.c_str()) +
+      "\",\"ssid\":\"" + json_escape(active_config.wifi.ssid.c_str()) +
+      "\",\"relayGpio\":" + std::to_string(active_config.relay.gpio) +
+      ",\"relayActiveHigh\":" +
+      std::string(active_config.relay.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"pulseMs\":" + std::to_string(active_config.relay.pulse_ms) +
+      ",\"sensorGpio\":" + std::to_string(active_config.sensor.gpio) +
+      ",\"sensorActiveHigh\":" +
+      std::string(active_config.sensor.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
+      ",\"openingSeconds\":" + std::to_string(active_config.timing.opening_ms / 1000) +
+      ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) + "}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t logout_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  session = {};
+  httpd_resp_set_hdr(request, "Set-Cookie",
+                     "gate_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+  return httpd_resp_sendstr(request, "{}");
+}
+
+esp_err_t reboot_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_sendstr(request, "{\"restarting\":true}");
+  xTaskCreate(restart_task, "admin_restart", 2048, nullptr, 5, nullptr);
+  return ESP_OK;
 }
 
 void restart_task(void*) {
@@ -449,6 +617,7 @@ void wifi_event(void*, esp_event_base_t event_base, int32_t event_id,
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
+  config.max_uri_handlers = 14;
   esp_err_t result = httpd_start(&server, &config);
   if (result != ESP_OK) return result;
 
@@ -460,6 +629,16 @@ esp_err_t start_http_server() {
                                .handler = stylesheet_handler, .user_ctx = nullptr};
   const httpd_uri_t status{.uri = "/api/v1/setup/status", .method = HTTP_GET,
                            .handler = status_handler, .user_ctx = nullptr};
+  const httpd_uri_t login{.uri = "/api/v1/session/login", .method = HTTP_POST,
+                          .handler = login_handler, .user_ctx = nullptr};
+  const httpd_uri_t session_status{.uri = "/api/v1/session", .method = HTTP_GET,
+                                   .handler = session_handler, .user_ctx = nullptr};
+  const httpd_uri_t config_api{.uri = "/api/v1/config", .method = HTTP_GET,
+                               .handler = config_handler, .user_ctx = nullptr};
+  const httpd_uri_t logout{.uri = "/api/v1/session/logout", .method = HTTP_POST,
+                           .handler = logout_handler, .user_ctx = nullptr};
+  const httpd_uri_t reboot{.uri = "/api/v1/system/reboot", .method = HTTP_POST,
+                           .handler = reboot_handler, .user_ctx = nullptr};
   const httpd_uri_t save{.uri = "/save", .method = HTTP_POST,
                          .handler = save_handler, .user_ctx = nullptr};
   const httpd_uri_t captive{.uri = "/*", .method = HTTP_GET,
@@ -468,6 +647,11 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &javascript)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &stylesheet)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &status)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &login)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &session_status)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &config_api)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &logout)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &reboot)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &save)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &captive)) != ESP_OK) {
     httpd_stop(server);
@@ -485,6 +669,7 @@ esp_err_t start() {
   gate::config::AppConfig saved_config;
   application_provisioned =
       gate::config::ConfigRepository().load(&saved_config) == ESP_OK;
+  if (application_provisioned) active_config = std::move(saved_config);
 
   std::uint8_t mac[6]{};
   ESP_RETURN_ON_ERROR(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP), kTag,

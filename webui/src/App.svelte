@@ -3,12 +3,28 @@
   let saving = $state(false);
   let message = $state('');
   let changeWifi = $state(false);
+  let authenticated = $state(false);
+  let csrf = $state('');
+  let config = $state(null);
+
+  async function loadDashboard() {
+    try {
+      const sessionResponse = await fetch('/api/v1/session', { cache: 'no-store' });
+      if (!sessionResponse.ok) return;
+      csrf = (await sessionResponse.json()).csrf;
+      const configResponse = await fetch('/api/v1/config', { cache: 'no-store' });
+      if (!configResponse.ok) return;
+      config = await configResponse.json();
+      authenticated = true;
+    } catch { authenticated = false; }
+  }
 
   async function loadStatus() {
     try {
       const response = await fetch('/api/v1/setup/status', { cache: 'no-store' });
       status = { ...status, ...(await response.json()), loading: false };
       changeWifi = !status.hasWifi;
+      if (status.provisioned) await loadDashboard();
     } catch {
       status.loading = false;
       message = 'Could not read device status. Reconnect to the setup network.';
@@ -40,6 +56,27 @@
     }
   }
 
+  async function login(event) {
+    saving = true; message = '';
+    const data = new FormData(event.currentTarget);
+    try {
+      const response = await fetch('/api/v1/session/login', {
+        method: 'POST', body: new URLSearchParams({ password: String(data.get('password') || '') })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      csrf = (await response.json()).csrf;
+      await loadDashboard();
+    } catch (error) { message = error instanceof Error ? error.message : 'Login failed.'; }
+    saving = false;
+  }
+
+  async function mutate(path) {
+    const response = await fetch(path, { method: 'POST', headers: { 'X-CSRF-Token': csrf } });
+    if (!response.ok) { message = await response.text(); return; }
+    if (path.endsWith('/logout')) { authenticated = false; config = null; csrf = ''; message = ''; }
+    else message = 'The controller is restarting…';
+  }
+
   loadStatus();
 </script>
 
@@ -54,14 +91,17 @@
 <main>
   {#if status.loading}
     <section class="card center"><div class="spinner"></div><p>Reading device status…</p></section>
-  {:else if status.provisioned}
+  {:else if status.provisioned && !authenticated}
     <section class="card success">
-      <div class="success-icon">✓</div><p class="eyebrow">Configuration complete</p>
-      <h2>Your controller is configured</h2>
-      <p>The validated settings are safely stored. Unauthenticated editing is disabled until the management login is available.</p>
-      <dl><div><dt>Station network</dt><dd>{status.ssid || 'Not connected'}</dd></div><div><dt>Setup network</dt><dd>{status.apSsid}</dd></div></dl>
-      <aside>HomeSpan and physical relay output remain disabled in this development build.</aside>
+      <div class="success-icon">⌁</div><p class="eyebrow">Administrator access</p><h2>Sign in to manage</h2>
+      <p>Your configuration is protected by the administrator password created during setup.</p>
+      <form class="login" onsubmit={(event) => { event.preventDefault(); login(event); }}><label>Password<input name="password" type="password" required autocomplete="current-password" /></label>{#if message}<p class="message">{message}</p>{/if}<button class="primary" disabled={saving}>{saving ? 'Signing in…' : 'Sign in'}<span>→</span></button></form>
     </section>
+  {:else if status.provisioned}
+    <section class="intro"><div><p class="eyebrow">Management dashboard</p><h2>{config?.displayName || 'Garage controller'}</h2><p>Live connectivity and redacted device configuration.</p></div><button class="secondary" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button></section>
+    <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><p>Controller state</p><strong>Safe / stopped</strong><small>Relay disabled</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
+    <section class="card"><div class="section-title"><span>IO</span><div><h3>Configured hardware</h3><p>Secrets are never returned by the API.</p></div></div><dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl></section>
+    {#if message}<p class="message">{message}</p>{/if}<button class="danger" onclick={() => mutate('/api/v1/system/reboot')}>Restart controller</button>
   {:else}
     <form onsubmit={(event) => { event.preventDefault(); submit(event); }}>
       <section class="intro"><div><p class="eyebrow">Secure first-time setup</p><h2>Configure your garage controller</h2><p>Settings are validated on the ESP32 before anything is stored. Relay output stays disabled.</p></div><div class="step">1 <span>of</span> 1</div></section>

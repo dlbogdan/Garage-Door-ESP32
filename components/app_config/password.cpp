@@ -36,5 +36,26 @@ esp_err_t derive_admin_password(const std::string& password,
   return ESP_OK;
 }
 
-}  // namespace gate::config
+bool verify_admin_password(const std::string& password,
+                           const AdminConfig& admin) {
+  if (password.empty() || admin.salt.empty() ||
+      admin.password_verifier.empty() || admin.pbkdf2_iterations < 50000) {
+    return false;
+  }
+  std::vector<std::uint8_t> candidate(admin.password_verifier.size());
+  const int result = mbedtls_pkcs5_pbkdf2_hmac_ext(
+      MBEDTLS_MD_SHA256,
+      reinterpret_cast<const unsigned char*>(password.data()), password.size(),
+      admin.salt.data(), admin.salt.size(), admin.pbkdf2_iterations,
+      candidate.size(), candidate.data());
+  if (result != 0) return false;
 
+  std::uint8_t difference = 0;
+  for (std::size_t index = 0; index < candidate.size(); ++index) {
+    difference |= candidate[index] ^ admin.password_verifier[index];
+  }
+  std::fill(candidate.begin(), candidate.end(), 0);
+  return difference == 0;
+}
+
+}  // namespace gate::config

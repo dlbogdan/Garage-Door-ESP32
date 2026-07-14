@@ -14,5 +14,8 @@ inline constexpr std::uint32_t kPasswordIterations = 60000;
 esp_err_t derive_admin_password(const std::string& password,
                                 AdminConfig* admin);
 
-}  // namespace gate::config
+// Re-derives the verifier and compares every byte without early exit.
+bool verify_admin_password(const std::string& password,
+                           const AdminConfig& admin);
 
+}  // namespace gate::config
