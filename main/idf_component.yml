@@ -1,0 +1,9 @@
+dependencies:
+  idf:
+    version: "==5.5.4"
+  espressif/arduino-esp32:
+    version: "==3.3.5"
+  espressif/libsodium:
+    version: "==1.0.20~1"
+  espressif/mdns:
+    version: "==1.10.1"
