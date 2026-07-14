@@ -11,12 +11,12 @@
 
 #include "WiFi.h"
 #include "app_config.hpp"
+#include "bootstrap_credentials.hpp"
 #include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -24,7 +24,6 @@
 #include "gate_hardware.hpp"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
-#include "nvs.h"
 #include "password.hpp"
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
@@ -33,21 +32,9 @@ namespace gate::provisioning {
 namespace {
 
 constexpr char kTag[] = "provisioning";
-constexpr char kNamespace[] = "gate_boot";
-constexpr char kCredentialsKey[] = "credentials";
-constexpr std::uint32_t kMagic = 0x42535450;
 constexpr std::size_t kMaxRequestBody = 2048;
 
-#pragma pack(push, 1)
-struct BootstrapCredentials {
-  std::uint32_t magic{kMagic};
-  char ap_password[16]{};
-  char station_ssid[33]{};
-  char station_password[64]{};
-};
-#pragma pack(pop)
-
-BootstrapCredentials credentials;
+gate::bootstrap::Credentials credentials;
 char access_point_ssid[24]{};
 httpd_handle_t server = nullptr;
 bool station_connected = false;
@@ -74,61 +61,6 @@ extern const unsigned char app_js_start[] asm("_binary_app_js_start");
 extern const unsigned char app_js_end[] asm("_binary_app_js_end");
 extern const unsigned char app_css_start[] asm("_binary_app_css_start");
 extern const unsigned char app_css_end[] asm("_binary_app_css_end");
-
-template <typename Character, std::size_t Size>
-void copy_string(Character (&destination)[Size], const char* source) {
-  std::memset(destination, 0, Size);
-  std::memcpy(destination, source,
-              std::min(std::strlen(source), Size - 1));
-}
-
-template <typename Character, std::size_t Size>
-void copy_string(Character (&destination)[Size], const std::string& source) {
-  copy_string(destination, source.c_str());
-}
-
-esp_err_t save_credentials() {
-  nvs_handle_t handle = 0;
-  esp_err_t result = nvs_open(kNamespace, NVS_READWRITE, &handle);
-  if (result == ESP_OK) {
-    result = nvs_set_blob(handle, kCredentialsKey, &credentials,
-                          sizeof(credentials));
-  }
-  if (result == ESP_OK) result = nvs_commit(handle);
-  if (handle != 0) nvs_close(handle);
-  return result;
-}
-
-void generate_ap_password() {
-  constexpr char alphabet[] =
-      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-  for (std::size_t index = 0; index < sizeof(credentials.ap_password) - 1;
-       ++index) {
-    credentials.ap_password[index] =
-        alphabet[esp_random() % (sizeof(alphabet) - 1)];
-  }
-  credentials.ap_password[sizeof(credentials.ap_password) - 1] = '\0';
-}
-
-esp_err_t load_or_create_credentials() {
-  nvs_handle_t handle = 0;
-  esp_err_t result = nvs_open(kNamespace, NVS_READONLY, &handle);
-  if (result == ESP_OK) {
-    std::size_t size = sizeof(credentials);
-    result = nvs_get_blob(handle, kCredentialsKey, &credentials, &size);
-    nvs_close(handle);
-    if (result == ESP_OK && size == sizeof(credentials) &&
-        credentials.magic == kMagic &&
-        strnlen(credentials.ap_password, sizeof(credentials.ap_password)) >= 8) {
-      return ESP_OK;
-    }
-  }
-
-  credentials = {};
-  credentials.magic = kMagic;
-  generate_ap_password();
-  return save_credentials();
-}
 
 bool decode_form_value(const std::string& encoded, std::string* decoded) {
   decoded->clear();
@@ -660,11 +592,10 @@ esp_err_t wifi_change_handler(httpd_req_t* request) {
                       "Could not persist the network configuration.");
   }
 
-  const BootstrapCredentials previous_credentials = credentials;
-  copy_string(credentials.station_ssid, ssid);
-  copy_string(credentials.station_password, wifi_password);
+  const gate::bootstrap::Credentials previous_credentials = credentials;
+  gate::bootstrap::set_station(&credentials, ssid, wifi_password);
   std::fill(wifi_password.begin(), wifi_password.end(), '\0');
-  result = save_credentials();
+  result = gate::bootstrap::save(credentials);
   if (result != ESP_OK) {
     credentials = previous_credentials;
     const esp_err_t rollback = gate::config::ConfigRepository().save(previous);
@@ -872,9 +803,8 @@ esp_err_t save_handler(httpd_req_t* request) {
     return send_error(request, "400 Bad Request", message);
   }
 
-  copy_string(credentials.station_ssid, ssid);
-  copy_string(credentials.station_password, password);
-  result = save_credentials();
+  gate::bootstrap::set_station(&credentials, ssid, password);
+  result = gate::bootstrap::save(credentials);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "Failed to save Wi-Fi credentials: %s",
              esp_err_to_name(result));
@@ -989,7 +919,7 @@ esp_err_t start_http_server() {
 }  // namespace
 
 esp_err_t start() {
-  esp_err_t result = load_or_create_credentials();
+  esp_err_t result = gate::bootstrap::load_or_create(&credentials);
   if (result != ESP_OK) return result;
 
   gate::config::AppConfig saved_config;
