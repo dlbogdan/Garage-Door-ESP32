@@ -1,8 +1,7 @@
 #include "config_repository.hpp"
 #include "esp_idf_version.h"
 #include "esp_log.h"
-#include "gate_controller.hpp"
-#include "gate_hardware.hpp"
+#include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
 #include "nvs_flash.h"
 #include "provisioning.hpp"
@@ -23,6 +22,10 @@ extern "C" void app_main(void) {
   }
   ESP_ERROR_CHECK(result);
 
+  // Initialize Arduino/HomeSpan first so there is exactly one owner for the
+  // Wi-Fi driver, default netifs, and Arduino network-event translation.
+  gate::homekit::initialize_networking();
+
   ESP_LOGI(kTag, "Gate Controller bootstrap on ESP-IDF %s", IDF_VER);
   gate::config::AppConfig config;
   gate::config::ConfigRepository repository;
@@ -30,26 +33,15 @@ extern "C" void app_main(void) {
   if (result == ESP_OK) {
     ESP_LOGI(kTag, "Validated configuration schema %lu loaded",
              static_cast<unsigned long>(config.schema_version));
-    const esp_err_t hardware_result = gate::hardware::start_monitoring(config);
-    if (hardware_result != ESP_OK) {
-      ESP_LOGE(kTag, "Could not start safe hardware monitoring: %s",
-               esp_err_to_name(hardware_result));
+    const esp_err_t runtime_result = gate::runtime::start(config);
+    if (runtime_result != ESP_OK) {
+      ESP_LOGE(kTag, "Could not start serialized gate runtime: %s",
+               esp_err_to_name(runtime_result));
     }
   } else {
     ESP_LOGW(kTag, "No valid provisioned configuration (%s)",
              esp_err_to_name(result));
   }
-
-  const gate::controller::Snapshot initial_snapshot{};
-  const auto boot_transition = gate::controller::reduce(
-      initial_snapshot,
-      {gate::controller::EventType::kBoot,
-       gate::controller::Target::kOpen,
-       false});
-  ESP_LOGI(kTag, "Gate controller initialized safely in state %s",
-           gate::controller::to_string(boot_transition.next.state));
-  ESP_ERROR_CHECK_WITHOUT_ABORT(
-      boot_transition.effects.start_pulse ? ESP_ERR_INVALID_STATE : ESP_OK);
 
   result = gate::provisioning::start();
   if (result != ESP_OK) {
@@ -57,6 +49,12 @@ extern "C" void app_main(void) {
              esp_err_to_name(result));
   }
 
-  ESP_LOGI(kTag, "HomeSpan Garage Door service compatibility compiled in");
-  ESP_LOGW(kTag, "Relay pulse control remains disabled in this milestone");
+  if (result == ESP_OK && gate::runtime::active()) {
+    const esp_err_t homekit_result = gate::homekit::start(config);
+    if (homekit_result != ESP_OK) {
+      ESP_LOGE(kTag, "Could not start Apple Home service: %s",
+               esp_err_to_name(homekit_result));
+    }
+  }
+  ESP_LOGI(kTag, "Bench relay pulse and HomeKit target control enabled");
 }

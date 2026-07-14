@@ -19,6 +19,7 @@ enum class Target : std::uint8_t { kOpen, kClosed };
 enum class EventType : std::uint8_t {
   kBoot,
   kTargetRequested,
+  kMaintenancePulseRequested,
   kSensorBecameActive,
   kSensorBecameInactive,
   kOpeningTimerExpired,
@@ -68,4 +69,3 @@ const char* to_string(State state);
 const char* to_string(Target target);
 
 }  // namespace gate::controller
-

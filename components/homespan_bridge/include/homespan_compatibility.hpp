@@ -1,9 +1,15 @@
 #pragma once
 
+#include "app_config.hpp"
+#include "esp_err.h"
+
 namespace gate::homekit {
 
-// Constructs the exact HAP service graph without starting networking. Used as
-// a compile-time compatibility gate until provisioned credentials are present.
-void build_garage_service_compatibility_graph();
+// Initializes Arduino and HomeSpan before provisioning. Arduino/HomeSpan owns
+// creation of the Wi-Fi driver, default netifs, and Arduino network events.
+void initialize_networking();
+esp_err_t start(const gate::config::AppConfig& config);
+bool active();
+bool paired();
 
 }  // namespace gate::homekit

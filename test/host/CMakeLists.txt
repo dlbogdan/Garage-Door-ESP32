@@ -34,3 +34,14 @@ target_include_directories(sensor_debouncer_tests PRIVATE
 target_compile_features(sensor_debouncer_tests PRIVATE cxx_std_17)
 target_compile_options(sensor_debouncer_tests PRIVATE -Wall -Wextra -Werror)
 add_test(NAME sensor_debouncer_tests COMMAND sensor_debouncer_tests)
+
+add_executable(relay_pulse_guard_tests
+  relay_pulse_guard_test.cpp
+  ../../components/gate_controller/relay_pulse_guard.cpp
+)
+target_include_directories(relay_pulse_guard_tests PRIVATE
+  ../../components/gate_controller/include
+)
+target_compile_features(relay_pulse_guard_tests PRIVATE cxx_std_17)
+target_compile_options(relay_pulse_guard_tests PRIVATE -Wall -Wextra -Werror)
+add_test(NAME relay_pulse_guard_tests COMMAND relay_pulse_guard_tests)

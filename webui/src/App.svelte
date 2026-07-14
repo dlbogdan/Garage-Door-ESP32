@@ -8,6 +8,8 @@
   let config = $state(null);
   let editing = $state(false);
   let activeTab = $state('status');
+  let pulsing = $state(false);
+  let homekit = $state(null);
 
   async function loadDashboard() {
     try {
@@ -17,6 +19,8 @@
       const configResponse = await fetch('/api/v1/config', { cache: 'no-store' });
       if (!configResponse.ok) return;
       config = await configResponse.json();
+      const homekitResponse = await fetch('/api/v1/homekit', { cache: 'no-store' });
+      if (homekitResponse.ok) homekit = await homekitResponse.json();
       authenticated = true;
     } catch { authenticated = false; }
   }
@@ -150,6 +154,21 @@
     } catch (error) { message = error instanceof Error ? error.message : 'Could not change Wi-Fi.'; saving = false; }
   }
 
+  async function testRelayPulse() {
+    pulsing = true;
+    message = 'Requesting relay pulse…';
+    try {
+      const response = await fetch('/api/v1/gate/test-pulse', {
+        method: 'POST', headers: { 'X-CSRF-Token': csrf }
+      });
+      if (!response.ok) throw new Error(await response.text());
+      message = `Relay pulse accepted (${config?.pulseMs} ms).`;
+    } catch (error) {
+      message = error instanceof Error ? error.message : 'Could not pulse relay.';
+    }
+    pulsing = false;
+  }
+
   loadStatus();
   setInterval(refreshRuntimeStatus, 1000);
 </script>
@@ -184,7 +203,7 @@
       <section class="card"><div class="section-title"><span>ST</span><div><h3>System status</h3><p>Current firmware milestone and safety posture.</p></div></div><dl class="settings"><div><dt>Configuration</dt><dd>Valid and protected</dd></div><div><dt>Relay output</dt><dd>{config?.relayControlEnabled ? 'Enabled' : 'Inactive · commands disabled'}</dd></div><div><dt>Sensor monitor</dt><dd>{config?.hardwareMonitoring ? 'Running' : 'Unavailable'}</dd></div><div><dt>Fallback recovery</dt><dd>Always available</dd></div></dl></section>
     {:else if activeTab === 'access'}
       <section class="card"><div class="section-title"><span>PW</span><div><h3>Administrator password</h3><p>Changing it signs out every active browser session.</p></div></div><form onsubmit={(event) => { event.preventDefault(); changePassword(event); }}><div class="grid"><label class="wide">Current password<input name="currentPassword" type="password" required autocomplete="current-password" /></label><label>New password<input name="newPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label><label>Confirm new password<input name="confirmation" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label></div><button class="primary" disabled={saving}>{saving ? 'Changing…' : 'Change password'}<span>→</span></button></form></section>
-      <section class="card muted-card"><div class="section-title"><span>HK</span><div><h3>Apple Home access</h3><p>Pairing PIN and QR-code management will appear here when the HomeSpan runtime is enabled.</p></div><span class="badge">Planned</span></div><p class="hint">Setup secrets remain stored locally and are never returned by the management API.</p></section>
+      <section class="card"><div class="section-title"><span>HK</span><div><h3>Apple Home access</h3><p>{homekit?.paired ? 'Paired with Apple Home.' : 'Ready to pair as a Garage Door Opener.'}</p></div><span class="badge">{homekit?.paired ? 'Paired' : homekit?.active ? 'Ready' : 'Starting'}</span></div><dl class="settings"><div><dt>Pairing code</dt><dd>{homekit?.setupCode || 'Loading…'}</dd></div><div><dt>Setup ID</dt><dd>{homekit?.setupId || '—'}</dd></div></dl><p class="hint">On iPhone or iPad, open Home → Add Accessory → More Options. Select {config?.displayName}, then choose “Enter code” and use the pairing code above.</p></section>
     {:else if activeTab === 'network'}
       <section class="card"><div class="section-title"><span>WF</span><div><h3>Wi-Fi network</h3><p>Current network: <strong>{config?.ssid}</strong></p></div></div><form onsubmit={(event) => { event.preventDefault(); saveWifiNetwork(event); }}><div class="grid"><label>New Wi-Fi name<input name="ssid" maxlength="32" required autocomplete="off" /></label><label>New Wi-Fi password<input name="wifiPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password" /><small>Leave empty only for an open network.</small></label><label class="wide">Administrator password<input name="adminPassword" type="password" required autocomplete="current-password" /><small>Required to authorize a network migration.</small></label></div><div class="warning">The controller restarts after saving. If the new network cannot be reached, connect to <strong>{status.apSsid}</strong> and open 192.168.4.1.</div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save network & restart'}<span>→</span></button></form></section>
       <section class="card muted-card"><div class="section-title"><span>IP</span><div><h3>IP configuration</h3><p>DHCP is currently automatic. Static IP, DNS, and hostname controls require a future schema migration.</p></div><span class="badge">DHCP</span></div></section>
@@ -192,7 +211,7 @@
       <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={() => { editing = !editing; message = ''; }}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
         {#if editing}
           <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}><div class="grid"><label class="wide">Display name<input name="displayName" maxlength="64" value={config?.displayName} required /></label><label>Relay GPIO<input name="relayGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>Relay level<select name="relayLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Pulse duration<input name="pulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /><small>milliseconds</small></label><label>Sensor GPIO<input name="sensorGpio" type="number" min="0" max="39" value={config?.sensorGpio} required /></label><label>Sensor level<select name="sensorLevel" value={config?.sensorActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Sensor pull<select name="sensorPull" value={config?.sensorPull}><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label><label>Opening time<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /><small>seconds</small></label><label>Closing time<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /><small>seconds</small></label></div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button></form>
-        {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Sensor pull</dt><dd>{config?.sensorPull}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl>{/if}
+        {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Sensor pull</dt><dd>{config?.sensorPull}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl><div class="warning">Bench test: this energizes relay GPIO {config?.relayGpio} once for {config?.pulseMs} ms.</div><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={testRelayPulse}>{pulsing ? 'Pulsing…' : 'Test relay pulse'}<span>→</span></button>{/if}
       </section>
     {:else}
       <section class="card empty-state"><div class="success-icon">≡</div><h3>Event logs</h3><p>Persistent redacted event logging is not implemented yet. Runtime diagnostics remain available through the ESP32 serial monitor.</p><span class="badge">Planned</span></section>

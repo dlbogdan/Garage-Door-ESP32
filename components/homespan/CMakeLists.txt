@@ -9,6 +9,7 @@ idf_component_register(
     "${HOMESPAN_ROOT}/src/SRP.cpp"
     "${HOMESPAN_ROOT}/src/TLV8.cpp"
     "${HOMESPAN_ROOT}/src/Utils.cpp"
+    "${HOMESPAN_ROOT}/src/src/extras/Blinker.cpp"
   INCLUDE_DIRS "${HOMESPAN_ROOT}/src"
   REQUIRES
     app_update

@@ -9,18 +9,16 @@
 #include <limits>
 #include <string>
 
+#include "WiFi.h"
 #include "app_config.hpp"
 #include "config_repository.hpp"
 #include "esp_check.h"
-#include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gate_hardware.hpp"
@@ -28,6 +26,8 @@
 #include "lwip/sockets.h"
 #include "nvs.h"
 #include "password.hpp"
+#include "gate_runtime.hpp"
+#include "homespan_compatibility.hpp"
 
 namespace gate::provisioning {
 namespace {
@@ -80,12 +80,6 @@ void copy_string(Character (&destination)[Size], const char* source) {
   std::memset(destination, 0, Size);
   std::memcpy(destination, source,
               std::min(std::strlen(source), Size - 1));
-}
-
-template <std::size_t Size>
-void copy_wifi_string(std::uint8_t (&destination)[Size], const char* source) {
-  std::memset(destination, 0, Size);
-  std::memcpy(destination, source, std::min(std::strlen(source), Size));
 }
 
 template <typename Character, std::size_t Size>
@@ -389,7 +383,8 @@ esp_err_t config_handler(httpd_req_t* request) {
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
       ",\"closedSensor\":" +
       std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
-      ",\"relayControlEnabled\":false}";
+      ",\"relayControlEnabled\":" +
+      std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
@@ -404,7 +399,52 @@ esp_err_t runtime_handler(httpd_req_t* request) {
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
       ",\"closedSensor\":" +
       std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
-      ",\"relayControlEnabled\":false}";
+      ",\"relayControlEnabled\":" +
+      std::string(gate::runtime::active() ? "true" : "false") + "}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t relay_pulse_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  switch (gate::runtime::request_bench_pulse()) {
+    case gate::runtime::RequestResult::kAccepted:
+      httpd_resp_set_status(request, "202 Accepted");
+      httpd_resp_set_type(request, "application/json");
+      return httpd_resp_sendstr(request, "{\"accepted\":true}");
+    case gate::runtime::RequestResult::kBusy:
+      return send_error(request, "409 Conflict",
+                        "Relay pulse is active or cooling down. Try again shortly.");
+    case gate::runtime::RequestResult::kHardwareError:
+      return send_error(request, "500 Internal Server Error",
+                        "Relay GPIO activation failed.");
+    case gate::runtime::RequestResult::kUnavailable:
+      return send_error(request, "503 Service Unavailable",
+                        "Gate runtime is not available.");
+  }
+  return ESP_FAIL;
+}
+
+esp_err_t homekit_handler(httpd_req_t* request) {
+  if (!authenticated(request)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  const std::string& code = active_config.homekit.setup_code;
+  const std::string formatted_code =
+      code.size() == 8 ? code.substr(0, 3) + "-" + code.substr(3, 2) + "-" +
+                             code.substr(5, 3)
+                       : code;
+  const std::string response =
+      "{\"active\":" +
+      std::string(gate::homekit::active() ? "true" : "false") +
+      ",\"paired\":" +
+      std::string(gate::homekit::paired() ? "true" : "false") +
+      ",\"setupCode\":\"" + json_escape(formatted_code.c_str()) +
+      "\",\"setupId\":\"" +
+      json_escape(active_config.homekit.setup_id.c_str()) + "\"}";
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
@@ -840,17 +880,11 @@ esp_err_t captive_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
-void wifi_event(void*, esp_event_base_t event_base, int32_t event_id,
-                void*) {
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START &&
+void wifi_event(arduino_event_id_t event, arduino_event_info_t) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED &&
       credentials.station_ssid[0] != '\0') {
-    esp_wifi_connect();
-  } else if (event_base == WIFI_EVENT &&
-             event_id == WIFI_EVENT_STA_DISCONNECTED &&
-             credentials.station_ssid[0] != '\0') {
     station_connected = false;
-    esp_wifi_connect();
-  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     station_connected = true;
     ESP_LOGI(kTag, "Station connected; setup AP remains active");
   }
@@ -859,7 +893,9 @@ void wifi_event(void*, esp_event_base_t event_base, int32_t event_id,
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
-  config.max_uri_handlers = 15;
+  // Sixteen routes are currently registered. Keep a little headroom so adding
+  // the next HomeKit-management endpoint cannot silently exhaust the table.
+  config.max_uri_handlers = 20;
   esp_err_t result = httpd_start(&server, &config);
   if (result != ESP_OK) return result;
 
@@ -878,7 +914,13 @@ esp_err_t start_http_server() {
   const httpd_uri_t config_api{.uri = "/api/v1/config", .method = HTTP_GET,
                                .handler = config_handler, .user_ctx = nullptr};
   const httpd_uri_t runtime_api{.uri = "/api/v1/runtime", .method = HTTP_GET,
-                                .handler = runtime_handler, .user_ctx = nullptr};
+                                 .handler = runtime_handler, .user_ctx = nullptr};
+  const httpd_uri_t relay_pulse{
+      .uri = "/api/v1/gate/test-pulse", .method = HTTP_POST,
+      .handler = relay_pulse_handler, .user_ctx = nullptr};
+  const httpd_uri_t homekit_api{
+      .uri = "/api/v1/homekit", .method = HTTP_GET,
+      .handler = homekit_handler, .user_ctx = nullptr};
   const httpd_uri_t update_config{.uri = "/api/v1/config", .method = HTTP_PUT,
                                   .handler = update_config_handler, .user_ctx = nullptr};
   const httpd_uri_t change_password{
@@ -903,6 +945,8 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &session_status)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &config_api)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &runtime_api)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &relay_pulse)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &homekit_api)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &update_config)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &change_password)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &change_wifi)) != ESP_OK ||
@@ -933,46 +977,18 @@ esp_err_t start() {
   std::snprintf(access_point_ssid, sizeof(access_point_ssid),
                 "GateSetup-%02X%02X%02X", mac[3], mac[4], mac[5]);
 
-  ESP_RETURN_ON_ERROR(esp_netif_init(), kTag, "Could not initialize network");
-  result = esp_event_loop_create_default();
-  if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) return result;
-  esp_netif_create_default_wifi_ap();
-  esp_netif_create_default_wifi_sta();
-
-  wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_RETURN_ON_ERROR(esp_wifi_init(&wifi_init), kTag,
-                      "Could not initialize Wi-Fi");
-  ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                  wifi_event, nullptr),
-                      kTag, "Could not register Wi-Fi events");
-  ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                  wifi_event, nullptr),
-                      kTag, "Could not register IP events");
-
-  wifi_config_t ap{};
-  copy_wifi_string(ap.ap.ssid, access_point_ssid);
-  copy_wifi_string(ap.ap.password, credentials.ap_password);
-  ap.ap.ssid_len = std::strlen(access_point_ssid);
-  ap.ap.channel = 1;
-  ap.ap.max_connection = 4;
-  ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-
-  wifi_config_t station{};
-  copy_wifi_string(station.sta.ssid, credentials.station_ssid);
-  copy_wifi_string(station.sta.password, credentials.station_password);
-  station.sta.threshold.authmode = credentials.station_password[0] == '\0'
-                                       ? WIFI_AUTH_OPEN
-                                       : WIFI_AUTH_WPA2_PSK;
-
-  ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), kTag,
-                      "Could not set AP/station mode");
-  ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), kTag,
-                      "Could not configure setup AP");
-  if (credentials.station_ssid[0] != '\0') {
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &station), kTag,
-                        "Could not configure station");
+  WiFi.onEvent(wifi_event);
+  if (!WiFi.mode(WIFI_AP_STA)) {
+    ESP_LOGE(kTag, "Could not set Arduino Wi-Fi AP+STA mode");
+    return ESP_FAIL;
   }
-  ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "Could not start Wi-Fi");
+  if (!WiFi.softAP(access_point_ssid, credentials.ap_password, 1, 0, 4)) {
+    ESP_LOGE(kTag, "Could not configure Arduino setup AP");
+    return ESP_FAIL;
+  }
+  // HomeSpan is the sole owner of station connect/reconnect. It receives the
+  // same persisted credentials in homekit::start() and calls WiFi.begin()
+  // after its polling task is ready to consume the resulting network events.
   ESP_RETURN_ON_ERROR(start_http_server(), kTag,
                       "Could not start setup web server");
   if (xTaskCreate(dns_task, "captive_dns", 3072, nullptr, 4, nullptr) != pdPASS) {

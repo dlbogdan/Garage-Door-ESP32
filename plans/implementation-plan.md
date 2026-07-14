@@ -275,13 +275,24 @@ Component responsibilities:
 - `app_config`: versioned typed configuration, validation, defaults, NVS repository, migration, secret redaction.
 - `board_io`: safe relay driver, pulse timer, closed-sensor debounce, BOOT recovery gesture, optional status LED.
 - `gate_controller`: pure deterministic state reducer plus side-effect adapter; sole owner of gate state.
-- `homespan_bridge`: HomeSpan accessory construction, characteristic callbacks, pairing metadata, event translation.
-- `provisioning`: Wi-Fi station lifecycle, fallback AP, captive DNS, setup-mode state.
+- `homespan_bridge`: Arduino/HomeSpan initialization, sole Wi-Fi/netif ownership,
+  HomeSpan accessory construction, characteristic callbacks, pairing metadata,
+  and event translation.
+- `provisioning`: fallback-AP policy expressed through Arduino's public `WiFi`
+  API, captive DNS, setup-mode state, and observation of station events. It MUST
+  NOT initiate station connections, initialize `esp_netif`, create default
+  netifs, or initialize/start the ESP-IDF Wi-Fi driver directly. HomeSpan alone
+  owns station `WiFi.begin()` and reconnect behavior.
 - `web_server`: REST API, authentication, sessions, CSRF protection, asset serving, captive-portal redirects.
 - `embedded_ui`: generated Svelte static asset manifest and compressed binary assets.
 - `event_log`: bounded in-memory diagnostic ring buffer with redaction; optional compact persisted fault counters.
 
 Use C++ where needed by HomeSpan and expose narrow C-compatible boundaries only where useful. The gate reducer SHOULD be platform-neutral C++ with no direct ESP-IDF, HomeSpan, GPIO, HTTP, or NVS calls so it can be host tested.
+
+The management HTTP server owns TCP port 80. HomeSpan HAP owns dedicated TCP
+port 1201 and advertises that port through `_hap._tcp` mDNS. These servers MUST
+never be configured to bind the same port; otherwise Apple pair-setup requests
+will be routed to the management HTTP server instead of HomeSpan.
 
 ## 7. ESP-IDF and dependency policy
 
@@ -300,16 +311,18 @@ Build scripts MUST:
 4. use a reproducible dependency lock;
 5. build with warnings treated seriously and no unresolved version override.
 
-HomeSpan is normally consumed in an Arduino environment. Integrate Arduino-ESP32 as an ESP-IDF component and run HomeSpan on top of it. Before feature implementation, create a compatibility spike that proves all of the following under ESP-IDF 5.5.4 on target hardware:
+HomeSpan is normally consumed in an Arduino environment. Integrate Arduino-ESP32 as an ESP-IDF component and run HomeSpan on top of it. Arduino/HomeSpan is the sole owner of Wi-Fi initialization, default netif creation, and Arduino network-event translation. Application provisioning retains policy ownership (credentials, AP+STA mode, fallback availability, and reconnect behavior) but applies that policy only through Arduino's public `WiFi` API. Native ESP-IDF HTTP, DNS, and socket services run on the Arduino-created interfaces. Before feature implementation, create a compatibility spike that proves all of the following under ESP-IDF 5.5.4 on target hardware:
 
 - Arduino component initializes without replacing the required application lifecycle unexpectedly;
 - HomeSpan starts and advertises a minimal Garage Door Opener accessory;
-- Wi-Fi can be managed by the application without HomeSpan overwriting credentials or starting its own conflicting provisioning flow;
+- Wi-Fi policy can be managed by the application through Arduino APIs without a
+  second ESP-IDF Wi-Fi/netif owner, HomeSpan overwriting credentials, or
+  HomeSpan starting its own conflicting provisioning flow;
 - HomeSpan pairing code and Setup ID can be supplied from validated NVS before HomeSpan begins;
 - HomeSpan pairing storage can be reset independently;
 - the web server and HomeSpan coexist without port/task/watchdog conflicts.
 
-If the newest HomeSpan or Arduino-ESP32 release is incompatible with ESP-IDF 5.5.4, select and pin the newest compatible commits. Do not change ESP-IDF version. Document any small compatibility patch under `patches/`, its upstream source, and why it is necessary.
+If the newest HomeSpan or Arduino-ESP32 release is incompatible with ESP-IDF 5.5.4, select and pin the newest compatible commits. Do not change ESP-IDF version. Do not modify the pinned HomeSpan submodule without explicit approval. Document any approved compatibility patch under `patches/`, its upstream source, and why it is necessary.
 
 Do not use HomeSpan’s serial CLI or built-in Wi-Fi provisioning as the product’s primary configuration mechanism. Serial output is diagnostics plus first-boot AP bootstrap information only.
 

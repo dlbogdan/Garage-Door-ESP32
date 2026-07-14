@@ -94,10 +94,14 @@ Transition reduce(const Snapshot& current, const Event& event) {
       transition.next.obstruction = false;
       transition.next.state = event.sensor_active ? State::kClosed
                                                   : State::kUnknownStopped;
+      if (event.sensor_active) transition.next.target = Target::kClosed;
       transition.effects.cancel_travel_timers = true;
       break;
     case EventType::kTargetRequested:
       request_target(&transition, event.target);
+      break;
+    case EventType::kMaintenancePulseRequested:
+      begin_pulse(&transition);
       break;
     case EventType::kSensorBecameActive:
       transition.next.sensor_active = true;

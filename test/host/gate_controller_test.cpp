@@ -36,6 +36,8 @@ void test_boot_is_safe() {
                   {EventType::kBoot, Target::kOpen, true});
   expect(result.next.state == State::kClosed,
          "active sensor boot must prove closed");
+  expect(result.next.target == Target::kClosed,
+         "active sensor boot must align the target to closed");
   expect(!result.effects.start_pulse, "closed boot must never pulse");
 }
 
@@ -88,6 +90,17 @@ void test_busy_rejection_has_no_delayed_action() {
          "pulse completion must not replay a rejected command");
 }
 
+void test_maintenance_pulse_does_not_change_motion_state() {
+  const auto current = at(State::kOpen, Target::kOpen);
+  const auto result = reduce(current, {EventType::kMaintenancePulseRequested});
+  expect(result.command_result == CommandResult::kAccepted,
+         "maintenance pulse must be accepted when idle");
+  expect(result.effects.start_pulse && result.next.pulse_active,
+         "maintenance request must emit one pulse effect");
+  expect(result.next.state == current.state && result.next.target == current.target,
+         "maintenance pulse must not infer motion or change target");
+}
+
 void test_sensor_and_timers() {
   auto result = reduce(at(State::kClosed, Target::kClosed, true),
                        {EventType::kSensorBecameInactive});
@@ -119,6 +132,7 @@ int main() {
   test_boot_is_safe();
   test_state_target_matrix();
   test_busy_rejection_has_no_delayed_action();
+  test_maintenance_pulse_does_not_change_motion_state();
   test_sensor_and_timers();
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";
