@@ -9,14 +9,12 @@
 #include <limits>
 #include <string>
 
-#include "WiFi.h"
 #include "app_config.hpp"
 #include "bootstrap_credentials.hpp"
 #include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -27,6 +25,7 @@
 #include "password.hpp"
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
+#include "network_manager.hpp"
 
 namespace gate::provisioning {
 namespace {
@@ -35,9 +34,7 @@ constexpr char kTag[] = "provisioning";
 constexpr std::size_t kMaxRequestBody = 2048;
 
 gate::bootstrap::Credentials credentials;
-char access_point_ssid[24]{};
 httpd_handle_t server = nullptr;
-bool station_connected = false;
 bool application_provisioned = false;
 gate::config::AppConfig active_config;
 
@@ -239,10 +236,10 @@ esp_err_t stylesheet_handler(httpd_req_t* request) {
 esp_err_t status_handler(httpd_req_t* request) {
   const std::string response =
       "{\"provisioned\":" + std::string(application_provisioned ? "true" : "false") +
-      ",\"connected\":" + std::string(station_connected ? "true" : "false") +
+      ",\"connected\":" + std::string(gate::network::station_connected() ? "true" : "false") +
       ",\"hasWifi\":" + std::string(credentials.station_ssid[0] ? "true" : "false") +
       ",\"ssid\":\"" + json_escape(credentials.station_ssid) +
-      "\",\"apSsid\":\"" + json_escape(access_point_ssid) + "\"}";
+      "\",\"apSsid\":\"" + json_escape(gate::network::access_point_ssid()) + "\"}";
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
@@ -836,16 +833,6 @@ esp_err_t captive_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
-void wifi_event(arduino_event_id_t event, arduino_event_info_t) {
-  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED &&
-      credentials.station_ssid[0] != '\0') {
-    station_connected = false;
-  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-    station_connected = true;
-    ESP_LOGI(kTag, "Station connected; setup AP remains active");
-  }
-}
-
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
@@ -927,31 +914,17 @@ esp_err_t start() {
       gate::config::ConfigRepository().load(&saved_config) == ESP_OK;
   if (application_provisioned) active_config = std::move(saved_config);
 
-  std::uint8_t mac[6]{};
-  ESP_RETURN_ON_ERROR(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP), kTag,
-                      "Could not read device MAC");
-  std::snprintf(access_point_ssid, sizeof(access_point_ssid),
-                "GateSetup-%02X%02X%02X", mac[3], mac[4], mac[5]);
-
-  WiFi.onEvent(wifi_event);
-  if (!WiFi.mode(WIFI_AP_STA)) {
-    ESP_LOGE(kTag, "Could not set Arduino Wi-Fi AP+STA mode");
-    return ESP_FAIL;
-  }
-  if (!WiFi.softAP(access_point_ssid, credentials.ap_password, 1, 0, 4)) {
-    ESP_LOGE(kTag, "Could not configure Arduino setup AP");
-    return ESP_FAIL;
-  }
-  // HomeSpan is the sole owner of station connect/reconnect. It receives the
-  // same persisted credentials in homekit::start() and calls WiFi.begin()
-  // after its polling task is ready to consume the resulting network events.
+  ESP_RETURN_ON_ERROR(
+      gate::network::start({credentials.ap_password,
+                            credentials.station_ssid[0] != '\0'}),
+      kTag, "Could not start setup network");
   ESP_RETURN_ON_ERROR(start_http_server(), kTag,
                       "Could not start setup web server");
   if (xTaskCreate(dns_task, "captive_dns", 3072, nullptr, 4, nullptr) != pdPASS) {
     return ESP_ERR_NO_MEM;
   }
 
-  ESP_LOGI(kTag, "Setup AP SSID: %s", access_point_ssid);
+  ESP_LOGI(kTag, "Setup AP SSID: %s", gate::network::access_point_ssid());
   ESP_LOGI(kTag, "Setup AP password: %s", credentials.ap_password);
   ESP_LOGI(kTag, "Setup URL: http://192.168.4.1/");
   return ESP_OK;
