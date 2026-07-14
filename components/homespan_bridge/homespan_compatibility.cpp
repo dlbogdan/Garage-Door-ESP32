@@ -6,6 +6,7 @@
 #include "HomeSpan.h"
 #include "esp_log.h"
 #include "gate_runtime.hpp"
+#include "homekit_projection.hpp"
 
 namespace gate::homekit {
 namespace {
@@ -14,21 +15,6 @@ constexpr char kTag[] = "homekit";
 constexpr std::uint16_t kHapPort = 1201;
 std::atomic_bool homekit_active{false};
 std::atomic_bool homekit_paired{false};
-
-int homekit_current_state(gate::controller::State state) {
-  using gate::controller::State;
-  switch (state) {
-    case State::kClosed: return Characteristic::CurrentDoorState::CLOSED;
-    case State::kOpening: return Characteristic::CurrentDoorState::OPENING;
-    case State::kOpen: return Characteristic::CurrentDoorState::OPEN;
-    case State::kClosing: return Characteristic::CurrentDoorState::CLOSING;
-    case State::kStoppedOpening:
-    case State::kStoppedClosing:
-    case State::kUnknownStopped:
-      return Characteristic::CurrentDoorState::STOPPED;
-  }
-  return Characteristic::CurrentDoorState::STOPPED;
-}
 
 struct GarageDoorService : Service::GarageDoorOpener {
   Characteristic::CurrentDoorState* current;
@@ -42,6 +28,19 @@ struct GarageDoorService : Service::GarageDoorOpener {
             Characteristic::TargetDoorState::OPEN)),
         obstruction(new Characteristic::ObstructionDetected(false)) {}
 
+  void publish_runtime_state() {
+    const gate::runtime::Snapshot state = gate::runtime::snapshot();
+    const gate::controller::Snapshot controller_state{
+        state.state, state.target, state.feedback_active, state.pulse_active,
+        state.obstruction};
+    const Projection next = project(controller_state);
+    if (current->getVal() != next.current) current->setVal(next.current);
+    if (target->getVal() != next.target) target->setVal(next.target);
+    if (obstruction->getVal() != next.obstruction) {
+      obstruction->setVal(next.obstruction);
+    }
+  }
+
   boolean update() override {
     const gate::controller::Target requested =
         target->getNewVal() == Characteristic::TargetDoorState::OPEN
@@ -54,22 +53,24 @@ struct GarageDoorService : Service::GarageDoorOpener {
                static_cast<int>(result));
       return false;
     }
+    // Publish the reducer result while handling the accepted write. In
+    // particular, an opposite request while travelling must enqueue an
+    // explicit STOPPED notification rather than relying only on a later poll.
+    // Do not set TargetDoorState here: HomeSpan still owns the in-flight target
+    // write and commits it after update() returns.
+    const gate::runtime::Snapshot state = gate::runtime::snapshot();
+    const gate::controller::Snapshot controller_state{
+        state.state, state.target, state.feedback_active, state.pulse_active,
+        state.obstruction};
+    const Projection next = project(controller_state);
+    if (current->getVal() != next.current) current->setVal(next.current);
+    if (obstruction->getVal() != next.obstruction) {
+      obstruction->setVal(next.obstruction);
+    }
     return true;
   }
 
-  void loop() override {
-    const gate::runtime::Snapshot state = gate::runtime::snapshot();
-    const int next_current = homekit_current_state(state.state);
-    const int next_target =
-        state.target == gate::controller::Target::kOpen
-            ? Characteristic::TargetDoorState::OPEN
-            : Characteristic::TargetDoorState::CLOSED;
-    if (current->getVal() != next_current) current->setVal(next_current);
-    if (target->getVal() != next_target) target->setVal(next_target);
-    if (obstruction->getVal() != state.obstruction) {
-      obstruction->setVal(state.obstruction);
-    }
-  }
+  void loop() override { publish_runtime_state(); }
 };
 
 void pairing_changed(boolean paired) {

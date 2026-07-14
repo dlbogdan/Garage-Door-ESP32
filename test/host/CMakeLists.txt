@@ -45,3 +45,15 @@ target_include_directories(relay_pulse_guard_tests PRIVATE
 target_compile_features(relay_pulse_guard_tests PRIVATE cxx_std_17)
 target_compile_options(relay_pulse_guard_tests PRIVATE -Wall -Wextra -Werror)
 add_test(NAME relay_pulse_guard_tests COMMAND relay_pulse_guard_tests)
+
+add_executable(homekit_projection_tests
+  homekit_projection_test.cpp
+  ../../components/homespan_bridge/homekit_projection.cpp
+)
+target_include_directories(homekit_projection_tests PRIVATE
+  ../../components/gate_controller/include
+  ../../components/homespan_bridge/include
+)
+target_compile_features(homekit_projection_tests PRIVATE cxx_std_17)
+target_compile_options(homekit_projection_tests PRIVATE -Wall -Wextra -Werror)
+add_test(NAME homekit_projection_tests COMMAND homekit_projection_tests)
