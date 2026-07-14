@@ -157,8 +157,24 @@ Last updated: 2026-07-14
 ### Gate state reducer
 
 - Pure deterministic reducer exists in `components/gate_controller`.
-- Boot state is conservative `UNKNOWN_STOPPED` unless the closed sensor is
-  authoritative.
+- Configuration schema v2 separates feedback electrical polarity from whether
+  ACTIVE means OPEN or CLOSED. Schema-v1 configurations migrate in memory with
+  ACTIVE=CLOSED and a 2000 ms endpoint-stability default.
+- Boot remains `UNKNOWN_STOPPED` until one feedback level remains stable for the
+  configured endpoint-stability interval.
+- Feedback edges restart endpoint stability timing, filtering the Ducati
+  controller's approximately one-second movement blink. Only a proved stable
+  feedback level changes state to OPEN or CLOSED.
+- OPENING and CLOSING are used only for commands originated by this firmware.
+  External/radio operation synchronizes when feedback proves an endpoint without
+  inventing an intermediate direction.
+- An opposite Apple target while moving emits one pause pulse, reports STOPPED,
+  and retains the previous directional target. Selecting the opposite target
+  again emits one new pulse and begins reverse movement. No automatic second
+  pulse is allowed.
+- Opening/closing durations are fault timeouts only. Expiry reports STOPPED,
+  sets obstruction, retains the requested destination, and never infers endpoint
+  success or emits another pulse.
 - Supports target requests, sensor transitions, movement timers, pulse
   completion, obstruction, busy rejection, and idempotency.
 - Safety properties already tested:
@@ -251,6 +267,13 @@ trust the command-line checker unless it actually fails.
    reference is captured before awaiting.
 
 ## Current limitations
+
+- Bench validation confirms endpoint commands, feedback stability filtering, and
+  Apple Home control mostly work. A remaining defect is that an opposite target
+  command issued mid-travel pulses the operator but Apple Home does not reliably
+  publish CurrentDoorState=STOPPED for the resulting pause. Preserve this as the
+  next controller/HomeSpan synchronization bug; do not infer that the physical
+  pause failed solely from the stale Home status.
 
 - Bench relay pulses are available from the authenticated Gate tab. Normal gate
   target commands are not connected yet.

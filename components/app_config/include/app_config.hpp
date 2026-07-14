@@ -6,10 +6,11 @@
 
 namespace gate::config {
 
-inline constexpr std::uint32_t kSchemaVersion = 1;
+inline constexpr std::uint32_t kSchemaVersion = 2;
 
 enum class ActiveLevel : std::uint8_t { kLow = 0, kHigh = 1 };
 enum class SensorPull : std::uint8_t { kNone = 0, kUp = 1, kDown = 2 };
+enum class FeedbackEndpoint : std::uint8_t { kOpen = 0, kClosed = 1 };
 
 struct WifiConfig {
   std::string ssid;
@@ -40,6 +41,8 @@ struct SensorConfig {
   ActiveLevel active_level{ActiveLevel::kLow};
   SensorPull pull{SensorPull::kUp};
   std::uint32_t debounce_ms{50};
+  FeedbackEndpoint active_endpoint{FeedbackEndpoint::kClosed};
+  std::uint32_t endpoint_stability_ms{2000};
 };
 
 struct TimingConfig {

@@ -1,0 +1,44 @@
+Logic of the system:
+
+The controller is a step by step gate controller, with one pin for controlling opening, pausing and closing by the same length of pulse (1 second), as follows:
+If the gate is closed, a pulse will issue an open command
+if the gate is open, a pulse will issue a close command
+if the gate is moving, a pulse will issue a pause command.
+ - after a pause, the gate will be moving the other direction it was initially moving. 
+
+there is only one feedback signal from the gate controller, and that is the open signal. if that signal is high, the gates are fully open. (must be configurable for open/closed as some controllers only issue a closed signal)
+
+while moving, the feedback signal flips from on and off about 1 second apart (might differ if closing or opening but for now we don't care)
+the gate controller can be commanded externally, (by radio remote) and this project must stay in sync. 
+
+DO NOT just wait 30 seconds or whatever the ammount is set for the closing/opening times, but just regard those as timeouts merely.
+use the feedback signal for actual state of the gate when that changes externally. 
+ex: if it's high, then the gate is open (or closed depending on controller variant), if not, the gate is closed (or open depending on the controller variant)
+
+the inter states (opening, closing) thus make sense only when the command originates from this project (apple home)
+so for example if the gate is closed, and I issue a open command from apple home through this project, then yes, the status will be "opening" until the signal (debounced 1s) is stable signaling is open.
+same for the other way, when is open, issue a close command, then status is closing until the feedback comes back. 
+
+the timeouts (gate closing/opening times) indeed can be used to assess if the gate is stuck. 
+
+Confirmed implementation rules:
+
+- Electrical feedback polarity (active-high/active-low) and the endpoint represented
+  by ACTIVE (OPEN/CLOSED) are separate configuration fields.
+- A feedback level proves an endpoint only after remaining unchanged for a
+  configurable stability interval (default 2000 ms), longer than the movement
+  blink. Every feedback edge restarts that interval.
+- Opening/closing durations are fault timeouts, never successful-completion timers.
+  Success requires stable feedback proving the requested endpoint.
+- A timeout reports STOPPED, sets obstruction, retains the failed requested target,
+  and never emits another pulse.
+- An opposite Apple target while moving emits one pulse and reports STOPPED. It
+  retains the target associated with the direction that was paused, allowing the
+  opposite target to be selected again.
+- The second opposite Apple command emits one new pulse and begins movement in the
+  reverse direction. No command automatically emits a second pulse.
+- Example: OPENING + request CLOSED -> one pulse, STOPPED, target OPEN;
+  request CLOSED again -> one pulse, CLOSING, target CLOSED.
+- External/radio movement is synchronized only when feedback remains stable long
+  enough to prove OPEN or CLOSED. Intermediate OPENING/CLOSING states are reported
+  only for commands originated by this firmware.

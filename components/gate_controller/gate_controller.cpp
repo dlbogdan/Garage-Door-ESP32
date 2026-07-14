@@ -22,7 +22,8 @@ void request_target(Transition* transition, Target requested) {
         transition->command_result = CommandResult::kNoChange;
       } else if (begin_pulse(transition)) {
         transition->next.target = requested;
-        transition->effects.start_sensor_release_timer = true;
+        transition->next.state = State::kOpening;
+        transition->effects.start_opening_timer = true;
       }
       break;
     case State::kOpen:
@@ -40,7 +41,7 @@ void request_target(Transition* transition, Target requested) {
         transition->next.target = requested;
         transition->command_result = CommandResult::kNoChange;
       } else if (begin_pulse(transition)) {
-        transition->next.target = requested;
+        transition->next.target = Target::kOpen;
         transition->next.state = State::kStoppedOpening;
         transition->effects.cancel_travel_timers = true;
       }
@@ -50,27 +51,29 @@ void request_target(Transition* transition, Target requested) {
         transition->next.target = requested;
         transition->command_result = CommandResult::kNoChange;
       } else if (begin_pulse(transition)) {
-        transition->next.target = requested;
+        transition->next.target = Target::kClosed;
         transition->next.state = State::kStoppedClosing;
         transition->effects.cancel_travel_timers = true;
       }
       break;
     case State::kStoppedOpening:
-      if (begin_pulse(transition)) {
-        transition->next.target = requested;
-        transition->next.state = requested == Target::kOpen ? State::kOpening
-                                                             : State::kClosing;
-        transition->effects.start_opening_timer = requested == Target::kOpen;
-        transition->effects.start_closing_timer = requested == Target::kClosed;
+      if (requested == Target::kOpen) {
+        transition->next.target = Target::kOpen;
+        transition->command_result = CommandResult::kNoChange;
+      } else if (begin_pulse(transition)) {
+        transition->next.target = Target::kClosed;
+        transition->next.state = State::kClosing;
+        transition->effects.start_closing_timer = true;
       }
       break;
     case State::kStoppedClosing:
-      if (begin_pulse(transition)) {
-        transition->next.target = requested;
-        transition->next.state = requested == Target::kOpen ? State::kOpening
-                                                             : State::kClosing;
-        transition->effects.start_opening_timer = requested == Target::kOpen;
-        transition->effects.start_closing_timer = requested == Target::kClosed;
+      if (requested == Target::kClosed) {
+        transition->next.target = Target::kClosed;
+        transition->command_result = CommandResult::kNoChange;
+      } else if (begin_pulse(transition)) {
+        transition->next.target = Target::kOpen;
+        transition->next.state = State::kOpening;
+        transition->effects.start_opening_timer = true;
       }
       break;
     case State::kUnknownStopped:
@@ -89,12 +92,11 @@ Transition reduce(const Snapshot& current, const Event& event) {
   Transition transition{current, {}, CommandResult::kNotACommand};
   switch (event.type) {
     case EventType::kBoot:
-      transition.next.sensor_active = event.sensor_active;
+      transition.next.feedback_active = event.feedback_active;
       transition.next.pulse_active = false;
       transition.next.obstruction = false;
-      transition.next.state = event.sensor_active ? State::kClosed
-                                                  : State::kUnknownStopped;
-      if (event.sensor_active) transition.next.target = Target::kClosed;
+      transition.next.state = State::kUnknownStopped;
+      transition.effects.start_feedback_stability_timer = true;
       transition.effects.cancel_travel_timers = true;
       break;
     case EventType::kTargetRequested:
@@ -103,33 +105,33 @@ Transition reduce(const Snapshot& current, const Event& event) {
     case EventType::kMaintenancePulseRequested:
       begin_pulse(&transition);
       break;
-    case EventType::kSensorBecameActive:
-      transition.next.sensor_active = true;
-      transition.next.state = State::kClosed;
+    case EventType::kFeedbackChanged:
+      transition.next.feedback_active = event.feedback_active;
+      transition.effects.start_feedback_stability_timer = true;
+      break;
+    case EventType::kFeedbackProvedOpen:
+      transition.next.feedback_active = event.feedback_active;
+      transition.next.state = State::kOpen;
+      transition.next.target = Target::kOpen;
       transition.next.obstruction = false;
       transition.effects.cancel_travel_timers = true;
       break;
-    case EventType::kSensorBecameInactive:
-      transition.next.sensor_active = false;
-      if (current.state == State::kClosed) {
-        transition.next.state = State::kOpening;
-        transition.next.target = Target::kOpen;
-        transition.effects.start_opening_timer = true;
-      }
+    case EventType::kFeedbackProvedClosed:
+      transition.next.feedback_active = event.feedback_active;
+      transition.next.state = State::kClosed;
+      transition.next.target = Target::kClosed;
+      transition.next.obstruction = false;
+      transition.effects.cancel_travel_timers = true;
       break;
     case EventType::kOpeningTimerExpired:
-      if (current.state == State::kOpening && !current.sensor_active) {
-        transition.next.state = State::kOpen;
-      }
-      break;
-    case EventType::kClosingTimerExpired:
-      if (current.state == State::kClosing && !current.sensor_active) {
-        transition.next.state = State::kStoppedClosing;
+      if (current.state == State::kOpening) {
+        transition.next.state = State::kStoppedOpening;
         transition.next.obstruction = true;
       }
       break;
-    case EventType::kSensorReleaseTimerExpired:
-      if (current.state == State::kClosed && current.sensor_active) {
+    case EventType::kClosingTimerExpired:
+      if (current.state == State::kClosing) {
+        transition.next.state = State::kStoppedClosing;
         transition.next.obstruction = true;
       }
       break;

@@ -20,11 +20,11 @@ enum class EventType : std::uint8_t {
   kBoot,
   kTargetRequested,
   kMaintenancePulseRequested,
-  kSensorBecameActive,
-  kSensorBecameInactive,
+  kFeedbackChanged,
+  kFeedbackProvedOpen,
+  kFeedbackProvedClosed,
   kOpeningTimerExpired,
   kClosingTimerExpired,
-  kSensorReleaseTimerExpired,
   kPulseCompleted,
   kObstructionAcknowledged,
 };
@@ -39,7 +39,7 @@ enum class CommandResult : std::uint8_t {
 struct Snapshot {
   State state{State::kUnknownStopped};
   Target target{Target::kOpen};
-  bool sensor_active{false};
+  bool feedback_active{false};
   bool pulse_active{false};
   bool obstruction{false};
 };
@@ -47,14 +47,14 @@ struct Snapshot {
 struct Event {
   EventType type;
   Target target{Target::kOpen};
-  bool sensor_active{false};
+  bool feedback_active{false};
 };
 
 struct Effects {
   bool start_pulse{false};
   bool start_opening_timer{false};
   bool start_closing_timer{false};
-  bool start_sensor_release_timer{false};
+  bool start_feedback_stability_timer{false};
   bool cancel_travel_timers{false};
 };
 

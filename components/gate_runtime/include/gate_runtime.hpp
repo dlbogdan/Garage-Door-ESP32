@@ -16,7 +16,7 @@ enum class RequestResult {
 struct Snapshot {
   gate::controller::State state;
   gate::controller::Target target;
-  bool sensor_active;
+  bool feedback_active;
   bool pulse_active;
   bool obstruction;
 };

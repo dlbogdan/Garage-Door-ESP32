@@ -40,7 +40,7 @@ struct RuntimeState {
   Deadline pulse;
   Deadline opening;
   Deadline closing;
-  Deadline sensor_release;
+  Deadline feedback_stability;
 };
 
 RuntimeState runtime;
@@ -72,8 +72,9 @@ void arm(Deadline* deadline, std::uint32_t now, std::uint32_t duration_ms) {
 void sensor_changed(bool active, void* context) {
   auto* queue = static_cast<QueueHandle_t*>(context);
   const RuntimeMessage message{{
-      active ? gate::controller::EventType::kSensorBecameActive
-             : gate::controller::EventType::kSensorBecameInactive}};
+      gate::controller::EventType::kFeedbackChanged,
+      gate::controller::Target::kOpen,
+      active}};
   if (xQueueSend(*queue, &message, portMAX_DELAY) != pdPASS) {
     ESP_LOGE(kTag, "Could not enqueue closed-sensor transition");
   }
@@ -108,7 +109,7 @@ RequestResult apply_event(const gate::controller::Event& event,
   if (transition.effects.cancel_travel_timers) {
     runtime.opening.active = false;
     runtime.closing.active = false;
-    runtime.sensor_release.active = false;
+    runtime.feedback_stability.active = false;
   }
   if (transition.effects.start_opening_timer) {
     runtime.closing.active = false;
@@ -118,14 +119,14 @@ RequestResult apply_event(const gate::controller::Event& event,
     runtime.opening.active = false;
     arm(&runtime.closing, now, runtime.config.timing.closing_ms);
   }
-  if (transition.effects.start_sensor_release_timer) {
-    arm(&runtime.sensor_release, now,
-        runtime.config.timing.sensor_release_timeout_ms);
+  if (transition.effects.start_feedback_stability_timer) {
+    arm(&runtime.feedback_stability, now,
+        runtime.config.sensor.endpoint_stability_ms);
   }
   ESP_LOGI(kTag, "Controller state=%s target=%s sensor=%d pulse=%d obstruction=%d",
            gate::controller::to_string(runtime.snapshot.state),
            gate::controller::to_string(runtime.snapshot.target),
-           runtime.snapshot.sensor_active, runtime.snapshot.pulse_active,
+           runtime.snapshot.feedback_active, runtime.snapshot.pulse_active,
            runtime.snapshot.obstruction);
   if (transition.command_result == gate::controller::CommandResult::kRejectedBusy) {
     return RequestResult::kBusy;
@@ -152,17 +153,27 @@ void process_expired(std::uint32_t now) {
     runtime.closing.active = false;
     apply_event({gate::controller::EventType::kClosingTimerExpired}, now);
   }
-  if (runtime.sensor_release.active &&
-      reached(now, runtime.sensor_release.at_ms)) {
-    runtime.sensor_release.active = false;
-    apply_event({gate::controller::EventType::kSensorReleaseTimerExpired}, now);
+  if (runtime.feedback_stability.active &&
+      reached(now, runtime.feedback_stability.at_ms)) {
+    runtime.feedback_stability.active = false;
+    const bool active = runtime.snapshot.feedback_active;
+    const bool active_means_open =
+        runtime.config.sensor.active_endpoint ==
+        gate::config::FeedbackEndpoint::kOpen;
+    const bool proved_open = active == active_means_open;
+    apply_event({proved_open ? gate::controller::EventType::kFeedbackProvedOpen
+                             : gate::controller::EventType::kFeedbackProvedClosed,
+                 proved_open ? gate::controller::Target::kOpen
+                             : gate::controller::Target::kClosed,
+                 active},
+                now);
   }
 }
 
 TickType_t wait_ticks(std::uint32_t now) {
   std::uint32_t wait_ms = kNoDeadline;
   const Deadline* deadlines[] = {&runtime.pulse, &runtime.opening,
-                                 &runtime.closing, &runtime.sensor_release};
+                                  &runtime.closing, &runtime.feedback_stability};
   for (const Deadline* deadline : deadlines) {
     if (!deadline->active) continue;
     if (reached(now, deadline->at_ms)) return 0;
@@ -175,7 +186,7 @@ void controller_task(void*) {
   const std::uint32_t boot_ms = now_ms();
   apply_event({gate::controller::EventType::kBoot,
                gate::controller::Target::kOpen,
-               gate::hardware::closed_sensor_active()},
+               gate::hardware::feedback_active()},
               boot_ms);
   runtime_active.store(true);
   while (true) {
@@ -259,7 +270,7 @@ Snapshot snapshot() {
   taskENTER_CRITICAL(&snapshot_lock);
   const gate::controller::Snapshot current = runtime.snapshot;
   taskEXIT_CRITICAL(&snapshot_lock);
-  return {current.state, current.target, current.sensor_active,
+  return {current.state, current.target, current.feedback_active,
           current.pulse_active, current.obstruction};
 }
 

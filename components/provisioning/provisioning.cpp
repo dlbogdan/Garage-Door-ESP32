@@ -376,13 +376,19 @@ esp_err_t config_handler(httpd_req_t* request) {
       std::string(active_config.sensor.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
       ",\"sensorPull\":\"" +
       std::string(active_config.sensor.pull == gate::config::SensorPull::kNone ? "none" :
-                  active_config.sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
+                   active_config.sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
+      ",\"feedbackActiveEndpoint\":\"" +
+      std::string(active_config.sensor.active_endpoint ==
+                          gate::config::FeedbackEndpoint::kOpen
+                      ? "open" : "closed") + "\"" +
+      ",\"feedbackStabilityMs\":" +
+      std::to_string(active_config.sensor.endpoint_stability_ms) +
       ",\"openingSeconds\":" + std::to_string(active_config.timing.opening_ms / 1000) +
       ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) +
       ",\"hardwareMonitoring\":" +
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
-      ",\"closedSensor\":" +
-      std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
+      ",\"feedbackActive\":" +
+      std::string(gate::hardware::feedback_active() ? "true" : "false") +
       ",\"relayControlEnabled\":" +
       std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
@@ -397,8 +403,8 @@ esp_err_t runtime_handler(httpd_req_t* request) {
   const std::string response =
       "{\"hardwareMonitoring\":" +
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
-      ",\"closedSensor\":" +
-      std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
+      ",\"feedbackActive\":" +
+      std::string(gate::hardware::feedback_active() ? "true" : "false") +
       ",\"relayControlEnabled\":" +
       std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
@@ -470,24 +476,30 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   std::string relay_level;
   std::string sensor_level;
   std::string sensor_pull;
+  std::string feedback_endpoint;
   int relay_gpio = -1;
   int sensor_gpio = -1;
   int pulse_ms = 0;
   int opening_seconds = 0;
   int closing_seconds = 0;
+  int feedback_stability_ms = 0;
   if (!form_value(body, "displayName", &display_name) || display_name.empty() ||
       display_name.size() > 64 ||
       !form_value(body, "relayLevel", &relay_level) ||
       !form_value(body, "sensorLevel", &sensor_level) ||
       !form_value(body, "sensorPull", &sensor_pull) ||
+      !form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
       !parse_integer(body, "relayGpio", 0, 39, &relay_gpio) ||
       !parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) ||
       !parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) ||
       !parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) ||
       !parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) ||
+      !parse_integer(body, "feedbackStabilityMs", 1000, 10000,
+                     &feedback_stability_ms) ||
       (relay_level != "low" && relay_level != "high") ||
       (sensor_level != "low" && sensor_level != "high") ||
-      (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down")) {
+      (sensor_pull != "none" && sensor_pull != "up" && sensor_pull != "down") ||
+      (feedback_endpoint != "open" && feedback_endpoint != "closed")) {
     return send_error(request, "400 Bad Request",
                       "One or more settings have an invalid format.");
   }
@@ -500,6 +512,10 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   updated.sensor.gpio = sensor_gpio;
   updated.sensor.active_level = parse_level(sensor_level);
   updated.sensor.pull = parse_pull(sensor_pull);
+  updated.sensor.active_endpoint =
+      feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
+                                  : gate::config::FeedbackEndpoint::kClosed;
+  updated.sensor.endpoint_stability_ms = feedback_stability_ms;
   updated.timing.opening_ms = opening_seconds * 1000;
   updated.timing.closing_ms = closing_seconds * 1000;
   const auto errors = gate::config::validate(updated);
@@ -778,11 +794,13 @@ esp_err_t save_handler(httpd_req_t* request) {
   std::string relay_level;
   std::string sensor_level;
   std::string sensor_pull;
+  std::string feedback_endpoint;
   int relay_gpio = -1;
   int sensor_gpio = -1;
   int pulse_ms = 0;
   int opening_seconds = 0;
   int closing_seconds = 0;
+  int feedback_stability_ms = 0;
   const bool submitted_wifi = form_value(body, "ssid", &ssid);
   if (submitted_wifi) form_value(body, "password", &password);
   if (!submitted_wifi && credentials.station_ssid[0] != '\0') {
@@ -803,15 +821,19 @@ esp_err_t save_handler(httpd_req_t* request) {
       form_value(body, "relayLevel", &relay_level) &&
       form_value(body, "sensorLevel", &sensor_level) &&
       form_value(body, "sensorPull", &sensor_pull) &&
+      form_value(body, "feedbackEndpoint", &feedback_endpoint) &&
       parse_integer(body, "relayGpio", 0, 39, &relay_gpio) &&
       parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) &&
       parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) &&
       parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) &&
       parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) &&
+      parse_integer(body, "feedbackStabilityMs", 1000, 10000,
+                    &feedback_stability_ms) &&
       admin_password.size() >= 10 && admin_password.size() <= 128 &&
       (relay_level == "low" || relay_level == "high") &&
       (sensor_level == "low" || sensor_level == "high") &&
-      (sensor_pull == "none" || sensor_pull == "up" || sensor_pull == "down");
+      (sensor_pull == "none" || sensor_pull == "up" || sensor_pull == "down") &&
+      (feedback_endpoint == "open" || feedback_endpoint == "closed");
   if (!fields_valid) {
     return send_error(request, "400 Bad Request",
                       "One or more setup fields have an invalid format.");
@@ -830,6 +852,10 @@ esp_err_t save_handler(httpd_req_t* request) {
   app_config.sensor.gpio = sensor_gpio;
   app_config.sensor.active_level = parse_level(sensor_level);
   app_config.sensor.pull = parse_pull(sensor_pull);
+  app_config.sensor.active_endpoint =
+      feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
+                                  : gate::config::FeedbackEndpoint::kClosed;
+  app_config.sensor.endpoint_stability_ms = feedback_stability_ms;
   app_config.timing.opening_ms = opening_seconds * 1000;
   app_config.timing.closing_ms = closing_seconds * 1000;
   esp_err_t result = gate::config::derive_admin_password(admin_password,

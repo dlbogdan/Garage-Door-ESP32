@@ -294,6 +294,51 @@ port 1201 and advertises that port through `_hap._tcp` mDNS. These servers MUST
 never be configured to bind the same port; otherwise Apple pair-setup requests
 will be routed to the management HTTP server instead of HomeSpan.
 
+The supported operator is a single-input step-by-step controller: endpoint pulse
+starts movement, movement pulse pauses, and the next pulse reverses the previous
+direction. Each accepted Apple command emits at most one pulse. Opposite target
+while moving pauses only; a second explicit Apple command performs reversal.
+Feedback electrical polarity and ACTIVE endpoint meaning are independent settings.
+Feedback must remain unchanged beyond the configured movement-blink filter before
+it proves OPEN or CLOSED. Travel durations are obstruction timeouts and MUST NOT
+be used to infer successful endpoint arrival.
+
+## 6.1 Management-plane cleanup plan
+
+The current `components/provisioning/provisioning.cpp` is a temporary god
+component. It combines bootstrap storage, fallback networking, captive DNS,
+embedded asset serving, authentication, first-time setup, and the permanent
+management REST API. Refactor it without changing routes or externally visible
+behavior in this order:
+
+1. Extract `bootstrap_credentials` with the `gate_boot` NVS format, AP-password
+   generation, and station credential synchronization. Preserve the existing
+   persisted blob format during extraction.
+2. Extract `network_manager` as the sole application policy layer for Arduino
+   AP+STA mode, fallback `softAP`, and observation of station events. HomeSpan
+   remains the sole owner of station connect/reconnect.
+3. Extract `captive_dns` into a task-owning component with explicit start/stop
+   lifecycle and socket cleanup.
+4. Extract `web_auth` with opaque sessions, cookie parsing, expiration,
+   constant-time token checks, CSRF enforcement, login/logout, and password
+   rotation. Route handlers consume an authentication interface rather than
+   global session state.
+5. Extract `web_server` to own the ESP-IDF HTTP server, embedded assets, common
+   response/security headers, body parsing, and route registration.
+6. Split handlers into `setup_api` (unprovisioned status and first-time save) and
+   `management_api` (configuration, runtime, HomeKit, relay test, Wi-Fi migration,
+   and reboot). Keep gate logic out of both; they may call only public runtime,
+   repository, hardware-status, and HomeSpan-bridge APIs.
+7. Reduce `gate::provisioning::start()` to a compatibility coordinator, then
+   rename the top-level subsystem to `management` in a later isolated commit
+   after all callers and documentation have migrated.
+
+Each extraction MUST preserve the existing REST paths, Svelte payloads, NVS
+compatibility, fallback recovery, HomeSpan port separation, authentication/CSRF
+semantics, and relay safety behavior. Run host tests, UI checks, firmware build,
+and a boot/pairing smoke test after every extraction; do not combine this
+structural refactor with gate-state behavioral fixes.
+
 ## 7. ESP-IDF and dependency policy
 
 Every firmware command MUST run in a shell where this exact script has been sourced first:

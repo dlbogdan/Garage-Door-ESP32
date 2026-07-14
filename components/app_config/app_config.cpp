@@ -113,6 +113,10 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     add_error(&errors, "sensor.debounceMs", "range",
               "Debounce must be 10-500 ms");
   }
+  if (!in_range(config.sensor.endpoint_stability_ms, 1000, 10000)) {
+    add_error(&errors, "sensor.endpointStabilityMs", "range",
+              "Endpoint stability must be 1-10 seconds");
+  }
   if (config.sensor.gpio >= 34 && config.sensor.pull != SensorPull::kNone) {
     add_error(&errors, "sensor.pull", "unsupported",
               "GPIO34-39 do not support internal pulls");

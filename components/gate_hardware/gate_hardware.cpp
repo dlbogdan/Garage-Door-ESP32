@@ -117,7 +117,7 @@ esp_err_t start_monitoring(const gate::config::AppConfig& config,
 
 bool monitoring_active() { return monitor_active.load(); }
 
-bool closed_sensor_active() { return stable_sensor_active.load(); }
+bool feedback_active() { return stable_sensor_active.load(); }
 
 esp_err_t activate_relay() {
   if (!monitor_active.load()) return ESP_ERR_INVALID_STATE;

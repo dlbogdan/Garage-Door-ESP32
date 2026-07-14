@@ -40,6 +40,12 @@ struct PersistedConfigV1 {
   std::uint8_t admin_verifier_length;
   std::uint32_t pbkdf2_iterations;
 };
+
+struct PersistedConfigV2 {
+  PersistedConfigV1 v1;
+  std::uint8_t sensor_active_endpoint;
+  std::uint32_t sensor_endpoint_stability_ms;
+};
 #pragma pack(pop)
 
 template <std::size_t Size>
@@ -59,39 +65,50 @@ esp_err_t ConfigRepository::load(AppConfig* config) const {
   nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READONLY, &handle);
   if (result != ESP_OK) return result;
-  PersistedConfigV1 stored{};
+  PersistedConfigV2 stored{};
   std::size_t size = sizeof(stored);
   result = nvs_get_blob(handle, kBlobKey, &stored, &size);
   nvs_close(handle);
   if (result != ESP_OK) return result;
-  if (size != sizeof(stored) || stored.magic != kMagic ||
-      stored.schema_version != kSchemaVersion) return ESP_ERR_INVALID_VERSION;
+  if ((size != sizeof(PersistedConfigV1) && size != sizeof(PersistedConfigV2)) ||
+      stored.v1.magic != kMagic ||
+      (stored.v1.schema_version != 1 &&
+       stored.v1.schema_version != kSchemaVersion)) return ESP_ERR_INVALID_VERSION;
+
+  const PersistedConfigV1& legacy = stored.v1;
 
   AppConfig loaded;
-  loaded.wifi = {read_string(stored.wifi_ssid),
-                 read_string(stored.wifi_password), stored.connection_deadline_ms};
-  loaded.access_point = {read_string(stored.ap_password), stored.ap_shutdown_ms};
-  loaded.homekit = {read_string(stored.display_name),
-                    read_string(stored.setup_code), read_string(stored.setup_id)};
-  loaded.relay = {stored.relay_gpio,
-                  static_cast<ActiveLevel>(stored.relay_active_level),
-                  stored.relay_pulse_ms, stored.relay_minimum_interval_ms};
-  loaded.sensor = {stored.sensor_gpio,
-                   static_cast<ActiveLevel>(stored.sensor_active_level),
-                   static_cast<SensorPull>(stored.sensor_pull),
-                   stored.sensor_debounce_ms};
-  loaded.timing = {stored.opening_ms, stored.closing_ms,
-                   stored.sensor_release_timeout_ms};
-  if (stored.admin_salt_length > sizeof(stored.admin_salt) ||
-      stored.admin_verifier_length > sizeof(stored.admin_verifier)) {
+  loaded.schema_version = kSchemaVersion;
+  loaded.wifi = {read_string(legacy.wifi_ssid),
+                 read_string(legacy.wifi_password), legacy.connection_deadline_ms};
+  loaded.access_point = {read_string(legacy.ap_password), legacy.ap_shutdown_ms};
+  loaded.homekit = {read_string(legacy.display_name),
+                    read_string(legacy.setup_code), read_string(legacy.setup_id)};
+  loaded.relay = {legacy.relay_gpio,
+                  static_cast<ActiveLevel>(legacy.relay_active_level),
+                  legacy.relay_pulse_ms, legacy.relay_minimum_interval_ms};
+  loaded.sensor = {legacy.sensor_gpio,
+                   static_cast<ActiveLevel>(legacy.sensor_active_level),
+                   static_cast<SensorPull>(legacy.sensor_pull),
+                   legacy.sensor_debounce_ms,
+                   size == sizeof(PersistedConfigV2)
+                       ? static_cast<FeedbackEndpoint>(stored.sensor_active_endpoint)
+                       : FeedbackEndpoint::kClosed,
+                   size == sizeof(PersistedConfigV2)
+                       ? stored.sensor_endpoint_stability_ms
+                       : 2000U};
+  loaded.timing = {legacy.opening_ms, legacy.closing_ms,
+                   legacy.sensor_release_timeout_ms};
+  if (legacy.admin_salt_length > sizeof(legacy.admin_salt) ||
+      legacy.admin_verifier_length > sizeof(legacy.admin_verifier)) {
     return ESP_ERR_INVALID_SIZE;
   }
-  loaded.admin.salt.assign(stored.admin_salt,
-                           stored.admin_salt + stored.admin_salt_length);
+  loaded.admin.salt.assign(legacy.admin_salt,
+                           legacy.admin_salt + legacy.admin_salt_length);
   loaded.admin.password_verifier.assign(
-      stored.admin_verifier,
-      stored.admin_verifier + stored.admin_verifier_length);
-  loaded.admin.pbkdf2_iterations = stored.pbkdf2_iterations;
+      legacy.admin_verifier,
+      legacy.admin_verifier + legacy.admin_verifier_length);
+  loaded.admin.pbkdf2_iterations = legacy.pbkdf2_iterations;
   if (!validate(loaded).empty()) return ESP_ERR_INVALID_STATE;
   *config = std::move(loaded);
   return ESP_OK;
@@ -99,35 +116,38 @@ esp_err_t ConfigRepository::load(AppConfig* config) const {
 
 esp_err_t ConfigRepository::save(const AppConfig& config) const {
   if (!validate(config).empty()) return ESP_ERR_INVALID_ARG;
-  PersistedConfigV1 stored{};
-  stored.magic = kMagic;
-  stored.schema_version = kSchemaVersion;
-  copy_string(stored.wifi_ssid, config.wifi.ssid);
-  copy_string(stored.wifi_password, config.wifi.password);
-  stored.connection_deadline_ms = config.wifi.connection_deadline_ms;
-  copy_string(stored.ap_password, config.access_point.password);
-  stored.ap_shutdown_ms = config.access_point.stable_station_shutdown_ms;
-  copy_string(stored.display_name, config.homekit.display_name);
-  copy_string(stored.setup_code, config.homekit.setup_code);
-  copy_string(stored.setup_id, config.homekit.setup_id);
-  stored.relay_gpio = config.relay.gpio;
-  stored.relay_active_level = static_cast<std::uint8_t>(config.relay.active_level);
-  stored.relay_pulse_ms = config.relay.pulse_ms;
-  stored.relay_minimum_interval_ms = config.relay.minimum_interval_ms;
-  stored.sensor_gpio = config.sensor.gpio;
-  stored.sensor_active_level = static_cast<std::uint8_t>(config.sensor.active_level);
-  stored.sensor_pull = static_cast<std::uint8_t>(config.sensor.pull);
-  stored.sensor_debounce_ms = config.sensor.debounce_ms;
-  stored.opening_ms = config.timing.opening_ms;
-  stored.closing_ms = config.timing.closing_ms;
-  stored.sensor_release_timeout_ms = config.timing.sensor_release_timeout_ms;
-  stored.admin_salt_length = config.admin.salt.size();
-  stored.admin_verifier_length = config.admin.password_verifier.size();
-  std::memcpy(stored.admin_salt, config.admin.salt.data(),
+  PersistedConfigV2 stored{};
+  PersistedConfigV1& legacy = stored.v1;
+  legacy.magic = kMagic;
+  legacy.schema_version = kSchemaVersion;
+  copy_string(legacy.wifi_ssid, config.wifi.ssid);
+  copy_string(legacy.wifi_password, config.wifi.password);
+  legacy.connection_deadline_ms = config.wifi.connection_deadline_ms;
+  copy_string(legacy.ap_password, config.access_point.password);
+  legacy.ap_shutdown_ms = config.access_point.stable_station_shutdown_ms;
+  copy_string(legacy.display_name, config.homekit.display_name);
+  copy_string(legacy.setup_code, config.homekit.setup_code);
+  copy_string(legacy.setup_id, config.homekit.setup_id);
+  legacy.relay_gpio = config.relay.gpio;
+  legacy.relay_active_level = static_cast<std::uint8_t>(config.relay.active_level);
+  legacy.relay_pulse_ms = config.relay.pulse_ms;
+  legacy.relay_minimum_interval_ms = config.relay.minimum_interval_ms;
+  legacy.sensor_gpio = config.sensor.gpio;
+  legacy.sensor_active_level = static_cast<std::uint8_t>(config.sensor.active_level);
+  legacy.sensor_pull = static_cast<std::uint8_t>(config.sensor.pull);
+  legacy.sensor_debounce_ms = config.sensor.debounce_ms;
+  stored.sensor_active_endpoint = static_cast<std::uint8_t>(config.sensor.active_endpoint);
+  stored.sensor_endpoint_stability_ms = config.sensor.endpoint_stability_ms;
+  legacy.opening_ms = config.timing.opening_ms;
+  legacy.closing_ms = config.timing.closing_ms;
+  legacy.sensor_release_timeout_ms = config.timing.sensor_release_timeout_ms;
+  legacy.admin_salt_length = config.admin.salt.size();
+  legacy.admin_verifier_length = config.admin.password_verifier.size();
+  std::memcpy(legacy.admin_salt, config.admin.salt.data(),
               config.admin.salt.size());
-  std::memcpy(stored.admin_verifier, config.admin.password_verifier.data(),
+  std::memcpy(legacy.admin_verifier, config.admin.password_verifier.data(),
               config.admin.password_verifier.size());
-  stored.pbkdf2_iterations = config.admin.pbkdf2_iterations;
+  legacy.pbkdf2_iterations = config.admin.pbkdf2_iterations;
 
   nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READWRITE, &handle);

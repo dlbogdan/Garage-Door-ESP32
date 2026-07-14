@@ -12,7 +12,7 @@ esp_err_t start_monitoring(const gate::config::AppConfig& config,
                            SensorChangedCallback callback = nullptr,
                            void* callback_context = nullptr);
 bool monitoring_active();
-bool closed_sensor_active();
+bool feedback_active();
 
 // Low-level fail-safe primitives. The serialized controller runtime is their
 // sole caller; no command-facing component is permitted to drive the relay.
