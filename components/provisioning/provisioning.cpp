@@ -23,6 +23,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gate_hardware.hpp"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
@@ -269,7 +270,8 @@ bool request_cookie(httpd_req_t* request, const char* name, std::string* value) 
   return false;
 }
 
-bool authenticated(httpd_req_t* request, bool require_csrf = false) {
+bool authenticated(httpd_req_t* request, bool require_csrf = false,
+                   bool refresh_activity = true) {
   const std::int64_t now = esp_timer_get_time();
   if (!session.active || now - session.last_seen_us > kSessionIdleUs ||
       now - session.created_us > kSessionAbsoluteUs) {
@@ -289,7 +291,7 @@ bool authenticated(httpd_req_t* request, bool require_csrf = false) {
     csrf.resize(length);
     if (!constant_time_equal(csrf, session.csrf)) return false;
   }
-  session.last_seen_us = now;
+  if (refresh_activity) session.last_seen_us = now;
   return true;
 }
 
@@ -382,7 +384,27 @@ esp_err_t config_handler(httpd_req_t* request) {
       std::string(active_config.sensor.pull == gate::config::SensorPull::kNone ? "none" :
                   active_config.sensor.pull == gate::config::SensorPull::kDown ? "down" : "up") + "\"" +
       ",\"openingSeconds\":" + std::to_string(active_config.timing.opening_ms / 1000) +
-      ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) + "}";
+      ",\"closingSeconds\":" + std::to_string(active_config.timing.closing_ms / 1000) +
+      ",\"hardwareMonitoring\":" +
+      std::string(gate::hardware::monitoring_active() ? "true" : "false") +
+      ",\"closedSensor\":" +
+      std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
+      ",\"relayControlEnabled\":false}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t runtime_handler(httpd_req_t* request) {
+  if (!authenticated(request, false, false)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  const std::string response =
+      "{\"hardwareMonitoring\":" +
+      std::string(gate::hardware::monitoring_active() ? "true" : "false") +
+      ",\"closedSensor\":" +
+      std::string(gate::hardware::closed_sensor_active() ? "true" : "false") +
+      ",\"relayControlEnabled\":false}";
   httpd_resp_set_type(request, "application/json");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   return httpd_resp_send(request, response.c_str(), response.size());
@@ -837,7 +859,7 @@ void wifi_event(void*, esp_event_base_t event_base, int32_t event_id,
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
-  config.max_uri_handlers = 14;
+  config.max_uri_handlers = 15;
   esp_err_t result = httpd_start(&server, &config);
   if (result != ESP_OK) return result;
 
@@ -855,6 +877,8 @@ esp_err_t start_http_server() {
                                    .handler = session_handler, .user_ctx = nullptr};
   const httpd_uri_t config_api{.uri = "/api/v1/config", .method = HTTP_GET,
                                .handler = config_handler, .user_ctx = nullptr};
+  const httpd_uri_t runtime_api{.uri = "/api/v1/runtime", .method = HTTP_GET,
+                                .handler = runtime_handler, .user_ctx = nullptr};
   const httpd_uri_t update_config{.uri = "/api/v1/config", .method = HTTP_PUT,
                                   .handler = update_config_handler, .user_ctx = nullptr};
   const httpd_uri_t change_password{
@@ -878,6 +902,7 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &login)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &session_status)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &config_api)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &runtime_api)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &update_config)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &change_password)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &change_wifi)) != ESP_OK ||

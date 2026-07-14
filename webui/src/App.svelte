@@ -21,6 +21,15 @@
     } catch { authenticated = false; }
   }
 
+  async function refreshRuntimeStatus() {
+    if (!authenticated || activeTab !== 'status') return;
+    try {
+      const response = await fetch('/api/v1/runtime', { cache: 'no-store' });
+      if (response.ok) config = { ...config, ...(await response.json()) };
+      else if (response.status === 401) authenticated = false;
+    } catch { /* Keep the last known state during a transient network gap. */ }
+  }
+
   async function loadStatus() {
     try {
       const response = await fetch('/api/v1/setup/status', { cache: 'no-store' });
@@ -142,6 +151,7 @@
   }
 
   loadStatus();
+  setInterval(refreshRuntimeStatus, 1000);
 </script>
 
 <svelte:head><meta name="description" content="Local Garage-Door-ESP32 configuration" /></svelte:head>
@@ -170,8 +180,8 @@
     </nav>
 
     {#if activeTab === 'status'}
-      <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><p>Controller state</p><strong>Safe / stopped</strong><small>Relay disabled</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
-      <section class="card"><div class="section-title"><span>ST</span><div><h3>System status</h3><p>Current firmware milestone and safety posture.</p></div></div><dl class="settings"><div><dt>Configuration</dt><dd>Valid and protected</dd></div><div><dt>Relay output</dt><dd>Disabled in firmware</dd></div><div><dt>Fallback recovery</dt><dd>Always available</dd></div></dl></section>
+      <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><span class:good={config?.closedSensor}></span><p>Closed sensor</p><strong>{config?.closedSensor ? 'Closed' : 'Not closed'}</strong><small>{config?.hardwareMonitoring ? 'Debounced monitoring active' : 'Monitor unavailable'}</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
+      <section class="card"><div class="section-title"><span>ST</span><div><h3>System status</h3><p>Current firmware milestone and safety posture.</p></div></div><dl class="settings"><div><dt>Configuration</dt><dd>Valid and protected</dd></div><div><dt>Relay output</dt><dd>{config?.relayControlEnabled ? 'Enabled' : 'Inactive · commands disabled'}</dd></div><div><dt>Sensor monitor</dt><dd>{config?.hardwareMonitoring ? 'Running' : 'Unavailable'}</dd></div><div><dt>Fallback recovery</dt><dd>Always available</dd></div></dl></section>
     {:else if activeTab === 'access'}
       <section class="card"><div class="section-title"><span>PW</span><div><h3>Administrator password</h3><p>Changing it signs out every active browser session.</p></div></div><form onsubmit={(event) => { event.preventDefault(); changePassword(event); }}><div class="grid"><label class="wide">Current password<input name="currentPassword" type="password" required autocomplete="current-password" /></label><label>New password<input name="newPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label><label>Confirm new password<input name="confirmation" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label></div><button class="primary" disabled={saving}>{saving ? 'Changing…' : 'Change password'}<span>→</span></button></form></section>
       <section class="card muted-card"><div class="section-title"><span>HK</span><div><h3>Apple Home access</h3><p>Pairing PIN and QR-code management will appear here when the HomeSpan runtime is enabled.</p></div><span class="badge">Planned</span></div><p class="hint">Setup secrets remain stored locally and are never returned by the management API.</p></section>

@@ -23,3 +23,14 @@ target_include_directories(app_config_tests PRIVATE
 target_compile_features(app_config_tests PRIVATE cxx_std_17)
 target_compile_options(app_config_tests PRIVATE -Wall -Wextra -Werror)
 add_test(NAME app_config_tests COMMAND app_config_tests)
+
+add_executable(sensor_debouncer_tests
+  sensor_debouncer_test.cpp
+  ../../components/gate_hardware/sensor_debouncer.cpp
+)
+target_include_directories(sensor_debouncer_tests PRIVATE
+  ../../components/gate_hardware/include
+)
+target_compile_features(sensor_debouncer_tests PRIVATE cxx_std_17)
+target_compile_options(sensor_debouncer_tests PRIVATE -Wall -Wextra -Werror)
+add_test(NAME sensor_debouncer_tests COMMAND sensor_debouncer_tests)

@@ -2,6 +2,7 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "gate_controller.hpp"
+#include "gate_hardware.hpp"
 #include "homespan_compatibility.hpp"
 #include "nvs_flash.h"
 #include "provisioning.hpp"
@@ -29,6 +30,11 @@ extern "C" void app_main(void) {
   if (result == ESP_OK) {
     ESP_LOGI(kTag, "Validated configuration schema %lu loaded",
              static_cast<unsigned long>(config.schema_version));
+    const esp_err_t hardware_result = gate::hardware::start_monitoring(config);
+    if (hardware_result != ESP_OK) {
+      ESP_LOGE(kTag, "Could not start safe hardware monitoring: %s",
+               esp_err_to_name(hardware_result));
+    }
   } else {
     ESP_LOGW(kTag, "No valid provisioned configuration (%s)",
              esp_err_to_name(result));
@@ -52,5 +58,5 @@ extern "C" void app_main(void) {
   }
 
   ESP_LOGI(kTag, "HomeSpan Garage Door service compatibility compiled in");
-  ESP_LOGW(kTag, "No hardware output is configured; relay remains inactive");
+  ESP_LOGW(kTag, "Relay pulse control remains disabled in this milestone");
 }
