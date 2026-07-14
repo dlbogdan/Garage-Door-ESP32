@@ -84,4 +84,5 @@ sdkconfig.old
 _references/
 webui/node_modules/
 webui/dist/
+components/provisioning/assets/
 .DS_Store

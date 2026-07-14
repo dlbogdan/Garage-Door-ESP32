@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 
+#include "app_config.hpp"
+#include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -22,6 +25,7 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
+#include "password.hpp"
 
 namespace gate::provisioning {
 namespace {
@@ -30,7 +34,7 @@ constexpr char kTag[] = "provisioning";
 constexpr char kNamespace[] = "gate_boot";
 constexpr char kCredentialsKey[] = "credentials";
 constexpr std::uint32_t kMagic = 0x42535450;
-constexpr std::size_t kMaxRequestBody = 256;
+constexpr std::size_t kMaxRequestBody = 2048;
 
 #pragma pack(push, 1)
 struct BootstrapCredentials {
@@ -45,6 +49,14 @@ BootstrapCredentials credentials;
 char access_point_ssid[24]{};
 httpd_handle_t server = nullptr;
 bool station_connected = false;
+bool application_provisioned = false;
+
+extern const unsigned char index_html_start[] asm("_binary_index_html_start");
+extern const unsigned char index_html_end[] asm("_binary_index_html_end");
+extern const unsigned char app_js_start[] asm("_binary_app_js_start");
+extern const unsigned char app_js_end[] asm("_binary_app_js_end");
+extern const unsigned char app_css_start[] asm("_binary_app_css_start");
+extern const unsigned char app_css_end[] asm("_binary_app_css_end");
 
 template <typename Character, std::size_t Size>
 void copy_string(Character (&destination)[Size], const char* source) {
@@ -146,38 +158,84 @@ bool form_value(const std::string& body, const char* key, std::string* value) {
   return false;
 }
 
-esp_err_t send_page(httpd_req_t* request, const char* message = nullptr) {
-  std::string page =
-      "<!doctype html><html lang=en><meta charset=utf-8>"
-      "<meta name=viewport content='width=device-width,initial-scale=1'>"
-      "<title>Gate Wi-Fi Setup</title><style>body{font:16px system-ui;"
-      "max-width:34rem;margin:2rem auto;padding:0 1rem;color:#17202a}"
-      "label{display:block;margin-top:1rem;font-weight:600}input{box-sizing:"
-      "border-box;width:100%;padding:.75rem;margin-top:.35rem}button{margin-top:"
-      "1.25rem;padding:.8rem 1.2rem}aside{padding:.8rem;background:#eef6ff}"
-      "</style><main><h1>Gate Wi-Fi Setup</h1><aside>Setup network: <b>" +
-      std::string(access_point_ssid) + "</b><br>Status: <b>" +
-      (station_connected ? "connected to Wi-Fi" : "waiting for Wi-Fi") +
-      "</b></aside>";
-  if (message != nullptr) {
-    page += "<p role=status><b>" + std::string(message) + "</b></p>";
+bool parse_integer(const std::string& body, const char* key, int minimum,
+                   int maximum, int* value) {
+  std::string text;
+  if (!form_value(body, key, &text) || text.empty()) return false;
+  char* end = nullptr;
+  const long parsed = std::strtol(text.c_str(), &end, 10);
+  if (end == nullptr || *end != '\0' || parsed < minimum || parsed > maximum) {
+    return false;
   }
-  page +=
-      "<form method=post action=/save><label for=ssid>Wi-Fi network name"
-      "</label><input id=ssid name=ssid maxlength=32 required autocomplete=off>"
-      "<label for=password>Wi-Fi password</label><input id=password name=password"
-      " type=password maxlength=63 autocomplete=new-password>"
-      "<button type=submit>Save and restart</button></form>"
-      "<p>The setup access point stays available in this development build. "
-      "Relay output remains disabled.</p></main></html>";
-  httpd_resp_set_type(request, "text/html; charset=utf-8");
-  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
-  httpd_resp_set_hdr(request, "X-Frame-Options", "DENY");
-  return httpd_resp_send(request, page.c_str(), page.size());
+  *value = static_cast<int>(parsed);
+  return true;
 }
 
-esp_err_t root_handler(httpd_req_t* request) { return send_page(request); }
+gate::config::ActiveLevel parse_level(const std::string& value) {
+  return value == "high" ? gate::config::ActiveLevel::kHigh
+                         : gate::config::ActiveLevel::kLow;
+}
+
+gate::config::SensorPull parse_pull(const std::string& value) {
+  if (value == "none") return gate::config::SensorPull::kNone;
+  if (value == "down") return gate::config::SensorPull::kDown;
+  return gate::config::SensorPull::kUp;
+}
+
+esp_err_t send_asset(httpd_req_t* request, const char* content_type,
+                     const unsigned char* start, const unsigned char* end,
+                     bool cache) {
+  httpd_resp_set_type(request, content_type);
+  httpd_resp_set_hdr(request, "Cache-Control", cache ? "public, max-age=3600"
+                                                     : "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  httpd_resp_set_hdr(request, "X-Frame-Options", "DENY");
+  return httpd_resp_send(request, reinterpret_cast<const char*>(start), end - start);
+}
+
+esp_err_t send_error(httpd_req_t* request, const char* status,
+                     const std::string& message) {
+  httpd_resp_set_status(request, status);
+  httpd_resp_set_type(request, "text/plain; charset=utf-8");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, message.c_str(), message.size());
+}
+
+std::string json_escape(const char* input) {
+  std::string output;
+  for (; *input != '\0'; ++input) {
+    if (*input == '"' || *input == '\\') output.push_back('\\');
+    if (static_cast<unsigned char>(*input) >= 0x20) output.push_back(*input);
+  }
+  return output;
+}
+
+esp_err_t root_handler(httpd_req_t* request) {
+  return send_asset(request, "text/html; charset=utf-8", index_html_start,
+                    index_html_end, false);
+}
+
+esp_err_t javascript_handler(httpd_req_t* request) {
+  return send_asset(request, "text/javascript; charset=utf-8", app_js_start,
+                    app_js_end, true);
+}
+
+esp_err_t stylesheet_handler(httpd_req_t* request) {
+  return send_asset(request, "text/css; charset=utf-8", app_css_start,
+                    app_css_end, true);
+}
+
+esp_err_t status_handler(httpd_req_t* request) {
+  const std::string response =
+      "{\"provisioned\":" + std::string(application_provisioned ? "true" : "false") +
+      ",\"connected\":" + std::string(station_connected ? "true" : "false") +
+      ",\"hasWifi\":" + std::string(credentials.station_ssid[0] ? "true" : "false") +
+      ",\"ssid\":\"" + json_escape(credentials.station_ssid) +
+      "\",\"apSsid\":\"" + json_escape(access_point_ssid) + "\"}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
 
 void restart_task(void*) {
   vTaskDelay(pdMS_TO_TICKS(1200));
@@ -246,9 +304,11 @@ void dns_task(void*) {
 }
 
 esp_err_t save_handler(httpd_req_t* request) {
+  if (application_provisioned) {
+    return send_error(request, "403 Forbidden", "Configuration is already saved.");
+  }
   if (request->content_len <= 0 || request->content_len > kMaxRequestBody) {
-    httpd_resp_set_status(request, "400 Bad Request");
-    return send_page(request, "Invalid request size.");
+    return send_error(request, "400 Bad Request", "Invalid request size.");
   }
   std::string body(request->content_len, '\0');
   std::size_t received = 0;
@@ -261,24 +321,98 @@ esp_err_t save_handler(httpd_req_t* request) {
 
   std::string ssid;
   std::string password;
-  if (!form_value(body, "ssid", &ssid) ||
-      !form_value(body, "password", &password) || ssid.empty() ||
-      ssid.size() > 32 || password.size() > 63 ||
+  std::string admin_password;
+  std::string display_name;
+  std::string setup_code;
+  std::string setup_id;
+  std::string relay_level;
+  std::string sensor_level;
+  std::string sensor_pull;
+  int relay_gpio = -1;
+  int sensor_gpio = -1;
+  int pulse_ms = 0;
+  int opening_seconds = 0;
+  int closing_seconds = 0;
+  const bool submitted_wifi = form_value(body, "ssid", &ssid);
+  if (submitted_wifi) form_value(body, "password", &password);
+  if (!submitted_wifi && credentials.station_ssid[0] != '\0') {
+    ssid = credentials.station_ssid;
+    password = credentials.station_password;
+  }
+  if (ssid.empty() || ssid.size() > 32 || password.size() > 63 ||
       (!password.empty() && password.size() < 8)) {
-    httpd_resp_set_status(request, "400 Bad Request");
-    return send_page(request,
-                     "Enter an SSID and either no password or 8-63 characters.");
+    return send_error(request, "400 Bad Request",
+                      "Enter an SSID and either no password or 8-63 characters.");
+  }
+
+  const bool fields_valid =
+      form_value(body, "adminPassword", &admin_password) &&
+      form_value(body, "displayName", &display_name) &&
+      form_value(body, "setupCode", &setup_code) &&
+      form_value(body, "setupId", &setup_id) &&
+      form_value(body, "relayLevel", &relay_level) &&
+      form_value(body, "sensorLevel", &sensor_level) &&
+      form_value(body, "sensorPull", &sensor_pull) &&
+      parse_integer(body, "relayGpio", 0, 39, &relay_gpio) &&
+      parse_integer(body, "sensorGpio", 0, 39, &sensor_gpio) &&
+      parse_integer(body, "pulseMs", 100, 2000, &pulse_ms) &&
+      parse_integer(body, "openingSeconds", 3, 180, &opening_seconds) &&
+      parse_integer(body, "closingSeconds", 3, 180, &closing_seconds) &&
+      admin_password.size() >= 10 && admin_password.size() <= 128 &&
+      (relay_level == "low" || relay_level == "high") &&
+      (sensor_level == "low" || sensor_level == "high") &&
+      (sensor_pull == "none" || sensor_pull == "up" || sensor_pull == "down");
+  if (!fields_valid) {
+    return send_error(request, "400 Bad Request",
+                      "One or more setup fields have an invalid format.");
+  }
+
+  gate::config::AppConfig app_config;
+  app_config.wifi.ssid = ssid;
+  app_config.wifi.password = password;
+  app_config.access_point.password = credentials.ap_password;
+  app_config.homekit.display_name = display_name;
+  app_config.homekit.setup_code = setup_code;
+  app_config.homekit.setup_id = setup_id;
+  app_config.relay.gpio = relay_gpio;
+  app_config.relay.active_level = parse_level(relay_level);
+  app_config.relay.pulse_ms = pulse_ms;
+  app_config.sensor.gpio = sensor_gpio;
+  app_config.sensor.active_level = parse_level(sensor_level);
+  app_config.sensor.pull = parse_pull(sensor_pull);
+  app_config.timing.opening_ms = opening_seconds * 1000;
+  app_config.timing.closing_ms = closing_seconds * 1000;
+  esp_err_t result = gate::config::derive_admin_password(admin_password,
+                                                          &app_config.admin);
+  std::fill(admin_password.begin(), admin_password.end(), '\0');
+  if (result != ESP_OK) {
+    return send_error(request, "500 Internal Server Error",
+                      "Could not derive administrator credentials.");
+  }
+  const auto validation_errors = gate::config::validate(app_config);
+  if (!validation_errors.empty()) {
+    const std::string message = validation_errors.front().field + ": " +
+                                validation_errors.front().message;
+    return send_error(request, "400 Bad Request", message);
   }
 
   copy_string(credentials.station_ssid, ssid);
   copy_string(credentials.station_password, password);
-  const esp_err_t result = save_credentials();
+  result = save_credentials();
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "Failed to save Wi-Fi credentials: %s",
              esp_err_to_name(result));
-    httpd_resp_set_status(request, "500 Internal Server Error");
-    return send_page(request, "Could not save settings.");
+    return send_error(request, "500 Internal Server Error",
+                      "Could not save settings.");
   }
+  result = gate::config::ConfigRepository().save(app_config);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to save application configuration: %s",
+             esp_err_to_name(result));
+    return send_error(request, "500 Internal Server Error",
+                      "Could not save complete configuration.");
+  }
+  application_provisioned = true;
 
   httpd_resp_set_type(request, "text/html; charset=utf-8");
   httpd_resp_sendstr(request,
@@ -320,11 +454,20 @@ esp_err_t start_http_server() {
 
   const httpd_uri_t root{.uri = "/", .method = HTTP_GET,
                          .handler = root_handler, .user_ctx = nullptr};
+  const httpd_uri_t javascript{.uri = "/app.js", .method = HTTP_GET,
+                               .handler = javascript_handler, .user_ctx = nullptr};
+  const httpd_uri_t stylesheet{.uri = "/app.css", .method = HTTP_GET,
+                               .handler = stylesheet_handler, .user_ctx = nullptr};
+  const httpd_uri_t status{.uri = "/api/v1/setup/status", .method = HTTP_GET,
+                           .handler = status_handler, .user_ctx = nullptr};
   const httpd_uri_t save{.uri = "/save", .method = HTTP_POST,
                          .handler = save_handler, .user_ctx = nullptr};
   const httpd_uri_t captive{.uri = "/*", .method = HTTP_GET,
                             .handler = captive_handler, .user_ctx = nullptr};
   if ((result = httpd_register_uri_handler(server, &root)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &javascript)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &stylesheet)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &status)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &save)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &captive)) != ESP_OK) {
     httpd_stop(server);
@@ -338,6 +481,10 @@ esp_err_t start_http_server() {
 esp_err_t start() {
   esp_err_t result = load_or_create_credentials();
   if (result != ESP_OK) return result;
+
+  gate::config::AppConfig saved_config;
+  application_provisioned =
+      gate::config::ConfigRepository().load(&saved_config) == ESP_OK;
 
   std::uint8_t mac[6]{};
   ESP_RETURN_ON_ERROR(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP), kTag,

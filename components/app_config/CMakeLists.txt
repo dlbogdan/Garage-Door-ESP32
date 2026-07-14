@@ -1,5 +1,5 @@
 idf_component_register(
-  SRCS "app_config.cpp" "config_repository.cpp"
+  SRCS "app_config.cpp" "config_repository.cpp" "password.cpp"
   INCLUDE_DIRS "include"
-  REQUIRES nvs_flash
+  REQUIRES mbedtls nvs_flash
 )

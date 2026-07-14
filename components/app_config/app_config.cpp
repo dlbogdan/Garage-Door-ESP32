@@ -126,7 +126,9 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     add_error(&errors, "timing.sensorReleaseTimeoutMs", "range",
               "Sensor release timeout must be 1-15 seconds");
   }
-  if (config.admin.salt.size() < 16 || config.admin.password_verifier.size() < 32) {
+  if (config.admin.salt.size() < 16 || config.admin.salt.size() > 32 ||
+      config.admin.password_verifier.size() < 32 ||
+      config.admin.password_verifier.size() > 64) {
     add_error(&errors, "admin.password", "missing",
               "Administrator password verifier is required");
   }

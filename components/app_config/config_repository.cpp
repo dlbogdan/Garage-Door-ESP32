@@ -56,7 +56,7 @@ std::string read_string(const char (&source)[Size]) {
 
 esp_err_t ConfigRepository::load(AppConfig* config) const {
   if (config == nullptr) return ESP_ERR_INVALID_ARG;
-  nvs_handle_t handle;
+  nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READONLY, &handle);
   if (result != ESP_OK) return result;
   PersistedConfigV1 stored{};
@@ -129,7 +129,7 @@ esp_err_t ConfigRepository::save(const AppConfig& config) const {
               config.admin.password_verifier.size());
   stored.pbkdf2_iterations = config.admin.pbkdf2_iterations;
 
-  nvs_handle_t handle;
+  nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READWRITE, &handle);
   if (result == ESP_OK) result = nvs_set_blob(handle, kBlobKey, &stored, sizeof(stored));
   if (result == ESP_OK) result = nvs_commit(handle);
@@ -138,7 +138,7 @@ esp_err_t ConfigRepository::save(const AppConfig& config) const {
 }
 
 esp_err_t ConfigRepository::erase() const {
-  nvs_handle_t handle;
+  nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READWRITE, &handle);
   if (result != ESP_OK) return result;
   result = nvs_erase_all(handle);

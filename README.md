@@ -7,9 +7,10 @@ dry-contact relay and one closed-position sensor.
 ## Status
 
 Initial implementation is in progress. The firmware now starts a password-
-protected captive setup AP, accepts and persists station Wi-Fi credentials, and
-attempts the configured station connection after restart. It also validates
-stored application configuration and initializes a platform-neutral,
+protected captive setup AP and accepts a complete first-boot configuration:
+administrator password, station Wi-Fi, Apple Home identity, relay and sensor
+GPIO settings, polarity, and travel timing. It validates and persists that
+configuration before restarting. It also initializes a platform-neutral,
 host-tested gate state reducer in a safe stopped/unknown state. It does not yet
 configure GPIO, start HomeSpan, or operate a relay. See `docs/provisioning.md`
 for the setup workflow. The normative design and safety rules are in
