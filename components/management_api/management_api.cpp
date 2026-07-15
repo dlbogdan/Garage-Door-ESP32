@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -47,6 +48,98 @@ std::string json_escape(const char* input) { return api_context.json_escape(inpu
 esp_err_t send_error(httpd_req_t* request, const char* status,
                      const std::string& message) {
   return api_context.send_error(request, status, message);
+}
+
+const char* decoder_health_name(gate::signal_decoder::DecoderHealth value) {
+  using H = gate::signal_decoder::DecoderHealth;
+  switch (value) {
+    case H::kGatheringEvidence: return "gatheringEvidence";
+    case H::kHealthy: return "healthy";
+    case H::kAmbiguousPosition: return "ambiguousPosition";
+    case H::kAmbiguousMovement: return "ambiguousMovement";
+    case H::kMonitoringFailed: return "monitoringFailed";
+  }
+  return "monitoringFailed";
+}
+
+const char* movement_phase_name(gate::signal_decoder::MovementRulePhase value) {
+  using P = gate::signal_decoder::MovementRulePhase;
+  switch (value) {
+    case P::kUnmatched: return "unmatched";
+    case P::kEntryPending: return "entryPending";
+    case P::kMatched: return "matched";
+    case P::kLossPending: return "lossPending";
+    case P::kExpired: return "expired";
+  }
+  return "unmatched";
+}
+
+std::string decoder_config_json(const gate::config::FeedbackDecoderConfig& decoder) {
+  using namespace gate::signal_decoder;
+  std::string json = "{\"version\":4,\"profile\":\"";
+  json += decoder.profile == gate::config::FeedbackDecoderProfile::kCustomRules
+              ? "customRules"
+              : "endpointPreset";
+  json += "\",\"limits\":{\"inputs\":4,\"rules\":8,\"groupsPerRule\":2,\"predicatesPerGroup\":3},\"inputs\":[";
+  for (std::uint8_t i = 0; i < decoder.input_count; ++i) {
+    if (i) json += ',';
+    const auto& input = decoder.inputs[i];
+    json += "{\"id\":" + std::to_string(input.id) + ",\"label\":\"" +
+            json_escape(input.label.c_str()) + "\",\"gpio\":" +
+            std::to_string(input.electrical.gpio) + ",\"activeLevel\":\"" +
+            (input.electrical.active_level == gate::config::ActiveLevel::kHigh ? "high" : "low") +
+            "\",\"pull\":\"" +
+            (input.electrical.pull == gate::config::SensorPull::kNone ? "none" :
+             input.electrical.pull == gate::config::SensorPull::kDown ? "down" : "up") +
+            "\",\"debounceMs\":" + std::to_string(input.electrical.debounce_ms) + "}";
+  }
+  json += "],\"rules\":[";
+  for (std::uint8_t r = 0; r < decoder.rules.rule_count; ++r) {
+    if (r) json += ',';
+    const auto& rule = decoder.rules.rules[r];
+    std::string outcome;
+    if (rule.output.kind == RuleOutputKind::kPosition) {
+      outcome = rule.output.position == PositionValue::kOpened ? "opened" : "closed";
+    } else if (rule.output.kind == RuleOutputKind::kMovement) {
+      outcome = rule.output.movement == MovementValue::kOpening ? "opening" :
+                rule.output.movement == MovementValue::kClosing ? "closing" : "stopped";
+    } else outcome = "obstructed";
+    const char* expiry = rule.movement.expiry == MatchAgeExpiry::kUnknown ? "unknown" :
+                         rule.movement.expiry == MatchAgeExpiry::kObstructed ? "obstructed" :
+                         rule.movement.expiry == MatchAgeExpiry::kUnknownAndObstructed ? "unknownAndObstructed" : "none";
+    json += "{\"id\":" + std::to_string(rule.id) + ",\"label\":\"" +
+            json_escape(decoder.rule_labels[r].c_str()) + "\",\"enabled\":" +
+            (rule.enabled ? "true" : "false") + ",\"outcome\":\"" + outcome +
+            "\",\"entryConfirmationMs\":" + std::to_string(rule.movement.entry_confirmation_ms) +
+            ",\"lossConfirmationMs\":" + std::to_string(rule.movement.loss_confirmation_ms) +
+            ",\"matchAgeLimitMs\":" + std::to_string(rule.movement.match_age_limit_ms) +
+            ",\"matchAgeExpiry\":\"" + expiry + "\",\"groups\":[";
+    for (std::uint8_t g = 0; g < rule.group_count; ++g) {
+      if (g) json += ',';
+      json += "[";
+      for (std::uint8_t p = 0; p < rule.groups[g].predicate_count; ++p) {
+        if (p) json += ',';
+        const auto& predicate = rule.groups[g].predicates[p];
+        json += "{\"kind\":\"";
+        if (predicate.kind == PredicateKind::kStableLevel) {
+          json += "stableLevel\",\"inputId\":" + std::to_string(predicate.input_id) +
+                  ",\"level\":" + (predicate.stable.level ? "1" : "0") +
+                  ",\"holdMs\":" + std::to_string(predicate.stable.hold_ms);
+        } else {
+          json += "periodicEdges\",\"inputId\":" + std::to_string(predicate.input_id) +
+                  ",\"minimumIntervalMs\":" + std::to_string(predicate.periodic.minimum_interval_ms) +
+                  ",\"maximumIntervalMs\":" + std::to_string(predicate.periodic.maximum_interval_ms) +
+                  ",\"minimumEdges\":" + std::to_string(predicate.periodic.minimum_edges) +
+                  ",\"observationWindowMs\":" + std::to_string(predicate.periodic.observation_window_ms) +
+                  ",\"maximumGapMs\":" + std::to_string(predicate.periodic.maximum_gap_ms);
+        }
+        json += "}";
+      }
+      json += "]";
+    }
+    json += "]}";
+  }
+  return json + "]}";
 }
 
 esp_err_t login_handler(httpd_req_t* request) {
@@ -99,15 +192,24 @@ esp_err_t config_handler(httpd_req_t* request) {
   const auto& op = config().gate_operator;
   const bool directional = op.profile == gate::config::OperatorProfile::kDirectional;
   const bool dual = op.feedback_topology == gate::config::FeedbackTopology::kDual;
+  const bool custom_decoder =
+      op.decoder.profile == gate::config::FeedbackDecoderProfile::kCustomRules;
   const auto& relay = directional ? op.open : op.step;
   const auto& sensor = dual ? op.opened_feedback : op.single_feedback;
   const std::string response =
       "{\"displayName\":\"" + json_escape(config().homekit.display_name.c_str()) +
       "\",\"ssid\":\"" + json_escape(config().wifi.ssid.c_str()) +
-      "\",\"schemaVersion\":3" +
+      "\",\"schemaVersion\":" +
+      std::to_string(gate::config::kSchemaVersion) +
       ",\"operatorProfile\":\"" + std::string(directional ? "directional" : "sequential") + "\"" +
       ",\"feedbackMode\":\"" + std::string(dual ? "dual" : "single") + "\"" +
-      ",\"legacyFlatConfigLossy\":" + std::string(directional || dual ? "true" : "false") +
+      ",\"feedbackDecoder\":\"" +
+      std::string(custom_decoder ? "customRules" : "endpointPreset") + "\"" +
+      ",\"decoderInputCount\":" + std::to_string(op.decoder.input_count) +
+      ",\"decoderRuleCount\":" + std::to_string(op.decoder.rules.rule_count) +
+      ",\"decoder\":" + decoder_config_json(op.decoder) +
+      ",\"legacyFlatConfigLossy\":" +
+      std::string(directional || dual || custom_decoder ? "true" : "false") +
       ",\"relayGpio\":" + std::to_string(relay.gpio) +
       ",\"relayActiveHigh\":" +
       std::string(relay.active_level == gate::config::ActiveLevel::kHigh ? "true" : "false") +
@@ -149,6 +251,49 @@ esp_err_t runtime_handler(httpd_req_t* request) {
   }
   const auto state = gate::runtime::snapshot();
   const auto assertions = gate::hardware::feedback_assertions();
+  const auto custom_sample = gate::hardware::feedback_sample();
+  const auto decoder = gate::runtime::decoder_snapshot();
+  std::string decoder_inputs = "[";
+  for (std::uint8_t index = 0; index < custom_sample.count; ++index) {
+    if (index != 0) decoder_inputs += ',';
+    decoder_inputs += "{\"id\":" +
+                      std::to_string(custom_sample.levels[index].id) +
+                      ",\"level\":" +
+                      (custom_sample.levels[index].level ? "true" : "false") +
+                      "}";
+  }
+  decoder_inputs += ']';
+  std::string decoder_rules = "[";
+  for (std::uint8_t index = 0; index < decoder.diagnostics.rule_count; ++index) {
+    if (index) decoder_rules += ',';
+    const auto& rule = decoder.diagnostics.rules[index];
+    decoder_rules += "{\"id\":" + std::to_string(rule.id) +
+                     ",\"expressionValue\":" + (rule.expression_value ? "true" : "false") +
+                     ",\"outputAsserted\":" + (rule.output_asserted ? "true" : "false") +
+                     ",\"phase\":\"" + movement_phase_name(rule.movement_phase) +
+                     "\",\"matchAgeMs\":" + std::to_string(rule.match_age_ms) + "}";
+  }
+  decoder_rules += ']';
+  std::string decoder_predicates = "[";
+  for (std::uint8_t index = 0; index < decoder.diagnostics.predicate_count;
+       ++index) {
+    if (index) decoder_predicates += ',';
+    const auto& predicate = decoder.diagnostics.predicates[index];
+    decoder_predicates +=
+        "{\"index\":" + std::to_string(index) +
+        ",\"value\":" + (predicate.value ? "true" : "false") +
+        ",\"evidenceValid\":" +
+        (predicate.evidence_valid ? "true" : "false") +
+        ",\"evidenceAgeMs\":" +
+        std::to_string(predicate.evidence_age_ms) +
+        ",\"latestIntervalMs\":" +
+        std::to_string(predicate.latest_interval_ms) +
+        ",\"estimatedCycleMs\":" +
+        std::to_string(predicate.latest_interval_ms * 2U) +
+        ",\"qualifyingEdgeCount\":" +
+        std::to_string(predicate.qualifying_edge_count) + "}";
+  }
+  decoder_predicates += ']';
   const std::string response =
       "{\"hardwareMonitoring\":" +
       std::string(gate::hardware::monitoring_active() ? "true" : "false") +
@@ -163,6 +308,24 @@ esp_err_t runtime_handler(httpd_req_t* request) {
       ",\"pulseActive\":" + std::string(state.pulse_active ? "true" : "false") +
       ",\"obstruction\":" + std::string(state.obstruction ? "true" : "false") +
       ",\"faultReason\":\"" + std::string(gate::controller::to_string(state.fault)) + "\"" +
+      ",\"decoderInputs\":" + decoder_inputs +
+      ",\"decoderSampleTimestampMs\":" +
+      std::to_string(custom_sample.timestamp_ms) +
+      ",\"decoderActive\":" + (decoder.active ? "true" : "false") +
+      ",\"decoderHealth\":\"" + decoder_health_name(decoder.result.health) + "\"" +
+      ",\"decoderGeneration\":" + std::to_string(decoder.result.generation) +
+      ",\"decoderPosition\":\"" +
+      (decoder.result.position_valid
+           ? (decoder.result.position == gate::signal_decoder::PositionValue::kOpened ? "opened" : "closed")
+           : "unknown") + "\"" +
+      ",\"decoderMovement\":\"" +
+      (decoder.result.movement_valid
+           ? (decoder.result.movement == gate::signal_decoder::MovementValue::kOpening ? "opening" :
+              decoder.result.movement == gate::signal_decoder::MovementValue::kClosing ? "closing" : "stopped")
+           : "unknown") + "\"" +
+      ",\"decoderObstructed\":" + (decoder.result.obstructed ? "true" : "false") +
+      ",\"decoderRules\":" + decoder_rules +
+      ",\"decoderPredicates\":" + decoder_predicates +
       ",\"relayControlEnabled\":" +
       std::string(gate::runtime::active() ? "true" : "false") + "}";
   httpd_resp_set_type(request, "application/json");
@@ -218,7 +381,7 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   if (!gate::web_auth::authorize(request, true)) {
     return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
   }
-  if (request->content_len <= 0 || request->content_len > 1024) {
+  if (request->content_len <= 0 || request->content_len > 16384) {
     return send_error(request, "400 Bad Request", "Invalid settings request.");
   }
   std::string body(request->content_len, '\0');
@@ -243,9 +406,12 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   int feedback_stability_ms = 0;
   std::string operator_profile;
   std::string feedback_mode;
+  std::string feedback_decoder;
   const bool has_operator_profile =
       form_value(body, "operatorProfile", &operator_profile);
   const bool has_feedback_mode = form_value(body, "feedbackMode", &feedback_mode);
+  const bool has_feedback_decoder =
+      form_value(body, "feedbackDecoder", &feedback_decoder);
   const bool canonical = has_operator_profile && has_feedback_mode;
   if (has_operator_profile != has_feedback_mode) {
     return send_error(request, "400 Bad Request",
@@ -298,6 +464,21 @@ esp_err_t update_config_handler(httpd_req_t* request) {
         ? gate::config::FeedbackTopology::kDual
         : gate::config::FeedbackTopology::kSingle;
 
+    if (has_feedback_decoder && feedback_decoder != "endpointPreset" &&
+        feedback_decoder != "customRules") {
+      return send_error(request, "400 Bad Request", "Invalid feedback decoder profile.");
+    }
+    if (!has_feedback_decoder &&
+        updated.gate_operator.decoder.profile ==
+            gate::config::FeedbackDecoderProfile::kCustomRules) {
+      return send_error(request, "409 Conflict",
+                        "This configuration uses custom decoder rules; use the version 4 decoder form to edit it.");
+    }
+    const bool custom = has_feedback_decoder && feedback_decoder == "customRules";
+    updated.gate_operator.decoder.profile =
+        custom ? gate::config::FeedbackDecoderProfile::kCustomRules
+               : gate::config::FeedbackDecoderProfile::kEndpointPreset;
+
     auto parse_output = [&](const char* gpio_name, const char* level_name,
                             const char* pulse_name,
                             gate::config::PulseOutputConfig* output) {
@@ -337,7 +518,7 @@ esp_err_t update_config_handler(httpd_req_t* request) {
       *input = {gpio, parse_level(level), parse_pull(pull), 50};
       return true;
     };
-    if (updated.gate_operator.feedback_topology == gate::config::FeedbackTopology::kSingle) {
+    if (!custom && updated.gate_operator.feedback_topology == gate::config::FeedbackTopology::kSingle) {
       if (!form_value(body, "feedbackEndpoint", &feedback_endpoint) ||
           (feedback_endpoint != "open" && feedback_endpoint != "closed") ||
           !parse_input("sensorGpio", "sensorLevel", "sensorPull",
@@ -347,11 +528,134 @@ esp_err_t update_config_handler(httpd_req_t* request) {
       updated.gate_operator.single_active_endpoint =
           feedback_endpoint == "open" ? gate::config::FeedbackEndpoint::kOpen
                                       : gate::config::FeedbackEndpoint::kClosed;
-    } else if (!parse_input("openedSensorGpio", "openedSensorLevel",
+    } else if (!custom && (!parse_input("openedSensorGpio", "openedSensorLevel",
                             "openedSensorPull", &updated.gate_operator.opened_feedback) ||
                !parse_input("closedSensorGpio", "closedSensorLevel",
-                            "closedSensorPull", &updated.gate_operator.closed_feedback)) {
+                             "closedSensorPull", &updated.gate_operator.closed_feedback))) {
       return send_error(request, "400 Bad Request", "Invalid dual feedback inputs.");
+    }
+
+    if (custom) {
+      using namespace gate::signal_decoder;
+      gate::config::FeedbackDecoderConfig parsed;
+      parsed.profile = gate::config::FeedbackDecoderProfile::kCustomRules;
+      int input_count = 0;
+      int rule_count = 0;
+      if (!parse_integer(body, "decoderInputCount", 1,
+                         DecoderLimits::kMaxInputs, &input_count) ||
+          !parse_integer(body, "decoderRuleCount", 1,
+                         DecoderLimits::kMaxRules, &rule_count)) {
+        return send_error(request, "400 Bad Request", "Invalid decoder counts.");
+      }
+      parsed.input_count = static_cast<std::uint8_t>(input_count);
+      parsed.rules.input_count = parsed.input_count;
+      for (int i = 0; i < input_count; ++i) {
+        const std::string prefix = "decoderInput" + std::to_string(i);
+        std::string label, level, pull;
+        int id = 0, gpio = 0, debounce = 0;
+        if (!parse_integer(body, (prefix + "Id").c_str(), 0, 255, &id) ||
+            !form_value(body, (prefix + "Label").c_str(), &label) ||
+            label.empty() || label.size() > 32 ||
+            !parse_integer(body, (prefix + "Gpio").c_str(), 0, 39, &gpio) ||
+            !form_value(body, (prefix + "Level").c_str(), &level) ||
+            !form_value(body, (prefix + "Pull").c_str(), &pull) ||
+            !parse_integer(body, (prefix + "DebounceMs").c_str(), 10, 500, &debounce) ||
+            (level != "low" && level != "high") ||
+            (pull != "none" && pull != "up" && pull != "down")) {
+          return send_error(request, "400 Bad Request", "Invalid declared decoder input.");
+        }
+        parsed.inputs[i] = {static_cast<InputId>(id), label,
+                            {gpio, parse_level(level), parse_pull(pull),
+                             static_cast<std::uint32_t>(debounce)}};
+        parsed.rules.input_ids[i] = static_cast<InputId>(id);
+      }
+      parsed.rules.rule_count = static_cast<std::uint8_t>(rule_count);
+      for (int r = 0; r < rule_count; ++r) {
+        const std::string prefix = "decoderRule" + std::to_string(r);
+        auto& rule = parsed.rules.rules[r];
+        std::string label, outcome, expiry;
+        int id = 0, group_count = 0, entry = 0, loss = 0, age = 0;
+        if (!parse_integer(body, (prefix + "Id").c_str(), 0, 255, &id) ||
+            !form_value(body, (prefix + "Label").c_str(), &label) ||
+            label.empty() || label.size() > 32 ||
+            !form_value(body, (prefix + "Outcome").c_str(), &outcome) ||
+            !parse_integer(body, (prefix + "GroupCount").c_str(), 1,
+                           DecoderLimits::kMaxGroupsPerRule, &group_count) ||
+            !parse_integer(body, (prefix + "EntryMs").c_str(), 0,
+                           std::numeric_limits<int>::max(), &entry) ||
+            !parse_integer(body, (prefix + "LossMs").c_str(), 0,
+                           std::numeric_limits<int>::max(), &loss) ||
+            !parse_integer(body, (prefix + "AgeMs").c_str(), 0,
+                           std::numeric_limits<int>::max(), &age) ||
+            !form_value(body, (prefix + "Expiry").c_str(), &expiry)) {
+          return send_error(request, "400 Bad Request", "Invalid decoder rule.");
+        }
+        rule.id = static_cast<RuleId>(id);
+        rule.enabled = true;
+        parsed.rule_labels[r] = label;
+        rule.group_count = static_cast<std::uint8_t>(group_count);
+        if (outcome == "opened" || outcome == "closed") {
+          rule.output.kind = RuleOutputKind::kPosition;
+          rule.output.position = outcome == "opened" ? PositionValue::kOpened : PositionValue::kClosed;
+        } else if (outcome == "opening" || outcome == "closing" || outcome == "stopped") {
+          rule.output.kind = RuleOutputKind::kMovement;
+          rule.output.movement = outcome == "opening" ? MovementValue::kOpening :
+                                 outcome == "closing" ? MovementValue::kClosing : MovementValue::kStopped;
+          rule.movement = {static_cast<Tick>(entry), static_cast<Tick>(loss),
+                           static_cast<Tick>(age),
+                           expiry == "unknown" ? MatchAgeExpiry::kUnknown :
+                           expiry == "obstructed" ? MatchAgeExpiry::kObstructed :
+                           expiry == "unknownAndObstructed" ? MatchAgeExpiry::kUnknownAndObstructed : MatchAgeExpiry::kNone};
+        } else if (outcome == "obstructed") {
+          rule.output.kind = RuleOutputKind::kFault;
+        } else {
+          return send_error(request, "400 Bad Request", "Invalid decoder outcome.");
+        }
+        for (int g = 0; g < group_count; ++g) {
+          const std::string group_prefix = prefix + "Group" + std::to_string(g);
+          int predicate_count = 0;
+          if (!parse_integer(body, (group_prefix + "PredicateCount").c_str(), 1,
+                             DecoderLimits::kMaxPredicatesPerGroup, &predicate_count)) {
+            return send_error(request, "400 Bad Request", "Invalid decoder alternative group.");
+          }
+          rule.groups[g].predicate_count = static_cast<std::uint8_t>(predicate_count);
+          for (int p = 0; p < predicate_count; ++p) {
+            const std::string pp = group_prefix + "Predicate" + std::to_string(p);
+            std::string kind;
+            int input_id = 0;
+            if (!form_value(body, (pp + "Kind").c_str(), &kind) ||
+                !parse_integer(body, (pp + "InputId").c_str(), 0, 255, &input_id)) {
+              return send_error(request, "400 Bad Request", "Invalid decoder predicate.");
+            }
+            auto& predicate = rule.groups[g].predicates[p];
+            predicate.input_id = static_cast<InputId>(input_id);
+            if (kind == "stableLevel") {
+              int level_value = 0, hold = 0;
+              if (!parse_integer(body, (pp + "Level").c_str(), 0, 1, &level_value) ||
+                  !parse_integer(body, (pp + "HoldMs").c_str(), 1,
+                                 std::numeric_limits<int>::max(), &hold)) {
+                return send_error(request, "400 Bad Request", "Invalid stable-level predicate.");
+              }
+              predicate.kind = PredicateKind::kStableLevel;
+              predicate.stable = {level_value != 0, static_cast<Tick>(hold)};
+            } else if (kind == "periodicEdges") {
+              int minimum = 0, maximum = 0, edges = 0, window = 0, gap = 0;
+              if (!parse_integer(body, (pp + "MinimumIntervalMs").c_str(), 1, std::numeric_limits<int>::max(), &minimum) ||
+                  !parse_integer(body, (pp + "MaximumIntervalMs").c_str(), 1, std::numeric_limits<int>::max(), &maximum) ||
+                  !parse_integer(body, (pp + "MinimumEdges").c_str(), 2, DecoderLimits::kMaxEdgesPerInput, &edges) ||
+                  !parse_integer(body, (pp + "ObservationWindowMs").c_str(), 1, std::numeric_limits<int>::max(), &window) ||
+                  !parse_integer(body, (pp + "MaximumGapMs").c_str(), 1, std::numeric_limits<int>::max(), &gap)) {
+                return send_error(request, "400 Bad Request", "Invalid periodic predicate.");
+              }
+              predicate.kind = PredicateKind::kPeriodicEdges;
+              predicate.periodic = {static_cast<Tick>(minimum), static_cast<Tick>(maximum),
+                                    static_cast<std::uint8_t>(edges), static_cast<Tick>(window),
+                                    static_cast<Tick>(gap)};
+            } else return send_error(request, "400 Bad Request", "Unknown decoder predicate kind.");
+          }
+        }
+      }
+      updated.gate_operator.decoder = std::move(parsed);
     }
   }
   updated.gate_operator.endpoint_stability_ms = feedback_stability_ms;
@@ -371,7 +675,13 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   }
   config() = std::move(updated);
   httpd_resp_set_type(request, "application/json");
-  return httpd_resp_sendstr(request, "{\"saved\":true}");
+  httpd_resp_sendstr(request, "{\"saved\":true,\"restarting\":true}");
+  // Hardware GPIO ownership, compiled decoder tables, and runtime histories are
+  // startup-owned. Applying only the in-memory AppConfig would leave the active
+  // board on the old wiring/rules, so activate every gate configuration change
+  // through one controlled restart.
+  api_context.schedule_restart();
+  return ESP_OK;
 }
 
 esp_err_t password_change_handler(httpd_req_t* request) {

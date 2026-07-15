@@ -7,6 +7,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 CONFIG_FREERTOS_HZ=1000
+# app_main initializes Arduino/HomeSpan networking, migrates the bounded schema,
+# and starts provisioning before returning. ESP-IDF's 3584-byte default is too
+# small for that C++ call chain even after large configuration objects are moved
+# to static/heap storage. The task is deleted when app_main returns, so this
+# temporary startup allocation does not reduce steady-state heap.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=5

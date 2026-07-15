@@ -146,6 +146,11 @@ esp_err_t register_assets() {
 
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  // The authenticated handlers use bounded C++ configuration/diagnostic
+  // snapshots and JSON/form parsing. ESP-IDF's 4096-byte default can corrupt
+  // the HTTP task's FreeRTOS list state under those legitimate call chains
+  // before the stack canary gets a chance to report an overflow.
+  config.stack_size = 12288;
   config.uri_match_fn = httpd_uri_match_wildcard;
   config.max_uri_handlers = 22;
   esp_err_t result = httpd_start(&server, &config);

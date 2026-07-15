@@ -25,12 +25,25 @@ target_compile_features(operator_domain_tests PRIVATE cxx_std_17)
 target_compile_options(operator_domain_tests PRIVATE -Wall -Wextra -Werror)
 add_test(NAME operator_domain_tests COMMAND operator_domain_tests)
 
+add_executable(signal_decoder_tests
+  signal_decoder_test.cpp
+  ../../components/signal_decoder/signal_decoder.cpp
+)
+target_include_directories(signal_decoder_tests PRIVATE
+  ../../components/signal_decoder/include
+)
+target_compile_features(signal_decoder_tests PRIVATE cxx_std_17)
+target_compile_options(signal_decoder_tests PRIVATE -Wall -Wextra -Werror)
+add_test(NAME signal_decoder_tests COMMAND signal_decoder_tests)
+
 add_executable(app_config_tests
   app_config_test.cpp
   ../../components/app_config/app_config.cpp
+  ../../components/signal_decoder/signal_decoder.cpp
 )
 target_include_directories(app_config_tests PRIVATE
   ../../components/app_config/include
+  ../../components/signal_decoder/include
 )
 target_compile_features(app_config_tests PRIVATE cxx_std_17)
 target_compile_options(app_config_tests PRIVATE -Wall -Wextra -Werror)

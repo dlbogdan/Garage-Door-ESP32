@@ -10,6 +10,11 @@
 namespace {
 constexpr char kTag[] = "gate_app";
 
+// Schema v4 contains bounded decoder tables and is intentionally much larger
+// than the legacy endpoint-only model. Keep the long-lived active configuration
+// in static storage instead of consuming most of app_main's 3584-byte stack.
+gate::config::AppConfig active_config;
+
 static_assert(ESP_IDF_VERSION == ESP_IDF_VERSION_VAL(5, 5, 4),
               "This firmware supports ESP-IDF v5.5.4 only");
 }  // namespace
@@ -28,13 +33,13 @@ extern "C" void app_main(void) {
   gate::homekit::initialize_networking();
 
   ESP_LOGI(kTag, "Gate Controller bootstrap on ESP-IDF %s", IDF_VER);
-  gate::config::AppConfig config;
   gate::config::ConfigRepository repository;
-  result = repository.load(&config);
-  if (result == ESP_OK) {
+  result = repository.load(&active_config);
+  const bool application_provisioned = result == ESP_OK;
+  if (application_provisioned) {
     ESP_LOGI(kTag, "Validated configuration schema %lu loaded",
-             static_cast<unsigned long>(config.schema_version));
-    const esp_err_t runtime_result = gate::runtime::start(config);
+             static_cast<unsigned long>(active_config.schema_version));
+    const esp_err_t runtime_result = gate::runtime::start(active_config);
     if (runtime_result != ESP_OK) {
       ESP_LOGE(kTag, "Could not start serialized gate runtime: %s",
                esp_err_to_name(runtime_result));
@@ -44,14 +49,15 @@ extern "C" void app_main(void) {
              esp_err_to_name(result));
   }
 
-  result = gate::provisioning::start();
+  result = gate::provisioning::start(application_provisioned ? &active_config
+                                                             : nullptr);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "Could not start Wi-Fi setup portal: %s",
              esp_err_to_name(result));
   }
 
   if (result == ESP_OK && gate::runtime::active()) {
-    const esp_err_t homekit_result = gate::homekit::start(config);
+    const esp_err_t homekit_result = gate::homekit::start(active_config);
     if (homekit_result != ESP_OK) {
       ESP_LOGE(kTag, "Could not start Apple Home service: %s",
                esp_err_to_name(homekit_result));

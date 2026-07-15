@@ -12,43 +12,52 @@ endif()
 
 set(GATE_BASE_VERSION "0.3.2")
 
-if(NOT DEFINED PROJECT_VER)
-  file(GLOB_RECURSE GATE_VERSION_INPUTS CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/components/*"
-    "${CMAKE_CURRENT_SOURCE_DIR}/main/*"
-    "${CMAKE_CURRENT_SOURCE_DIR}/webui/src/*"
-    "${CMAKE_CURRENT_SOURCE_DIR}/webui/index.html"
-    "${CMAKE_CURRENT_SOURCE_DIR}/webui/package.json"
-    "${CMAKE_CURRENT_SOURCE_DIR}/webui/package-lock.json"
-    "${CMAKE_CURRENT_SOURCE_DIR}/webui/vite.config.js"
-    "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults"
-    "${CMAKE_CURRENT_SOURCE_DIR}/partitions.csv")
-  list(FILTER GATE_VERSION_INPUTS EXCLUDE REGEX
-       "/components/management_server/assets/")
-  list(SORT GATE_VERSION_INPUTS)
-  set(GATE_VERSION_MATERIAL "")
-  foreach(GATE_VERSION_INPUT IN LISTS GATE_VERSION_INPUTS)
-    if(NOT IS_DIRECTORY "${GATE_VERSION_INPUT}")
-      file(SHA256 "${GATE_VERSION_INPUT}" GATE_INPUT_HASH)
-      file(RELATIVE_PATH GATE_INPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}"
-           "${GATE_VERSION_INPUT}")
-      string(APPEND GATE_VERSION_MATERIAL
-             "${GATE_INPUT_PATH}:${GATE_INPUT_HASH}\n")
-    endif()
-  endforeach()
-  string(SHA256 GATE_SOURCE_HASH "${GATE_VERSION_MATERIAL}")
-  string(SUBSTRING "${GATE_SOURCE_HASH}" 0 8 GATE_SOURCE_FINGERPRINT)
-  execute_process(
-    COMMAND git rev-parse --short=8 HEAD
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE GATE_GIT_REVISION
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-  if(GATE_GIT_REVISION STREQUAL "")
-    set(GATE_GIT_REVISION "nogit")
+# PROJECT_VER is retained in CMake's cache by ESP-IDF. Do not guard this
+# calculation with `if(NOT DEFINED PROJECT_VER)`: that causes incremental
+# reconfiguration to reuse the previous source fingerprint. CONFIGURE_DEPENDS
+# makes Ninja rerun CMake after any versioned input is added, removed, or
+# modified, and this block must recalculate the value on every such run.
+file(GLOB_RECURSE GATE_VERSION_INPUTS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/components/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/main/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/webui/src/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/webui/index.html"
+  "${CMAKE_CURRENT_SOURCE_DIR}/webui/package.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/webui/package-lock.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/webui/vite.config.js"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults"
+  "${CMAKE_CURRENT_SOURCE_DIR}/partitions.csv")
+list(FILTER GATE_VERSION_INPUTS EXCLUDE REGEX
+     "/components/management_server/assets/")
+list(SORT GATE_VERSION_INPUTS)
+set(GATE_VERSION_MATERIAL "")
+foreach(GATE_VERSION_INPUT IN LISTS GATE_VERSION_INPUTS)
+  if(NOT IS_DIRECTORY "${GATE_VERSION_INPUT}")
+    file(SHA256 "${GATE_VERSION_INPUT}" GATE_INPUT_HASH)
+    file(RELATIVE_PATH GATE_INPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}"
+         "${GATE_VERSION_INPUT}")
+    string(APPEND GATE_VERSION_MATERIAL
+           "${GATE_INPUT_PATH}:${GATE_INPUT_HASH}\n")
   endif()
+endforeach()
+string(SHA256 GATE_SOURCE_HASH "${GATE_VERSION_MATERIAL}")
+string(SUBSTRING "${GATE_SOURCE_HASH}" 0 8 GATE_SOURCE_FINGERPRINT)
+execute_process(
+  COMMAND git rev-parse --short=8 HEAD
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE GATE_GIT_REVISION
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(GATE_GIT_REVISION STREQUAL "")
+  set(GATE_GIT_REVISION "nogit")
+endif()
+if(DEFINED GATE_RELEASE_VERSION AND NOT GATE_RELEASE_VERSION STREQUAL "")
+  set(PROJECT_VER "${GATE_RELEASE_VERSION}" CACHE STRING
+      "Gate firmware version" FORCE)
+else()
   set(PROJECT_VER
-      "${GATE_BASE_VERSION}-dev-${GATE_GIT_REVISION}-${GATE_SOURCE_FINGERPRINT}")
+      "${GATE_BASE_VERSION}-dev-${GATE_GIT_REVISION}-${GATE_SOURCE_FINGERPRINT}"
+      CACHE STRING "Gate firmware version" FORCE)
 endif()
 message(STATUS "Gate firmware version: ${PROJECT_VER}")
 project(garage_door_esp32)

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <new>
 
 #include "esp_log.h"
@@ -25,6 +26,8 @@ constexpr std::uint32_t kNoDeadline = std::numeric_limits<std::uint32_t>::max();
 struct RuntimeMessage {
   gate::controller::Event event;
   TaskHandle_t reply_task{nullptr};
+  bool has_feedback_sample{false};
+  gate::hardware::FeedbackSample feedback_sample{};
 };
 
 struct Deadline {
@@ -41,12 +44,42 @@ struct RuntimeState {
   Deadline opening;
   Deadline closing;
   Deadline feedback_stability;
+  gate::signal_decoder::CompiledDecoder compiled_decoder;
+  std::unique_ptr<gate::signal_decoder::SignalDecoder> decoder;
+  std::uint32_t decoder_generation{0};
+  gate::signal_decoder::DecoderResult decoder_result{};
+  gate::signal_decoder::DecoderDiagnostics decoder_diagnostics{};
 };
 
 RuntimeState runtime;
 std::atomic_bool runtime_active{false};
 std::atomic_bool maintenance{false};
 portMUX_TYPE snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
+
+RequestResult apply_event(const gate::controller::Event& event,
+                          std::uint32_t now);
+
+const char* event_name(gate::controller::EventType type) {
+  using EventType = gate::controller::EventType;
+  switch (type) {
+    case EventType::kBoot: return "BOOT";
+    case EventType::kTargetRequested: return "TARGET_REQUESTED";
+    case EventType::kMaintenancePulseRequested: return "MAINTENANCE_PULSE";
+    case EventType::kObservationChanged: return "OBSERVATION_CHANGED";
+    case EventType::kObservationStable: return "OBSERVATION_STABLE";
+    case EventType::kExternalOpening: return "EXTERNAL_OPENING";
+    case EventType::kExternalClosing: return "EXTERNAL_CLOSING";
+    case EventType::kExternalStopped: return "EXTERNAL_STOPPED";
+    case EventType::kDecoderObstructed: return "DECODER_OBSTRUCTED";
+    case EventType::kDecoderHealthy: return "DECODER_HEALTHY";
+    case EventType::kDecoderFault: return "DECODER_FAULT";
+    case EventType::kOpeningTimerExpired: return "OPENING_TIMER_EXPIRED";
+    case EventType::kClosingTimerExpired: return "CLOSING_TIMER_EXPIRED";
+    case EventType::kPulseCompleted: return "PULSE_COMPLETED";
+    case EventType::kObstructionAcknowledged: return "OBSTRUCTION_ACKNOWLEDGED";
+  }
+  return "UNKNOWN";
+}
 
 void release_runtime_resources() {
   delete runtime.pulse_guard;
@@ -117,6 +150,103 @@ void sensor_changed(gate::controller::FeedbackAssertions assertions,
   }
 }
 
+void decoded_sample_changed(const gate::hardware::FeedbackSample& sample,
+                            void* context) {
+  auto* queue = static_cast<QueueHandle_t*>(context);
+  // Queue the exact coherent sample that caused the wake-up. Reading a shared
+  // "latest" sample here would coalesce multiple edges while the owner task is
+  // busy and corrupt periodic timing evidence.
+  RuntimeMessage message{{gate::controller::EventType::kDecoderHealthy}};
+  message.has_feedback_sample = true;
+  message.feedback_sample = sample;
+  if (xQueueSend(*queue, &message, portMAX_DELAY) != pdPASS) {
+    ESP_LOGE(kTag, "Could not enqueue decoded feedback sample");
+  }
+}
+
+void apply_decoder_result(std::uint32_t now) {
+  if (runtime.decoder == nullptr) return;
+  const auto& decoded = runtime.decoder->result();
+  taskENTER_CRITICAL(&snapshot_lock);
+  runtime.decoder_result = decoded;
+  runtime.decoder_diagnostics = runtime.decoder->diagnostics(now);
+  taskEXIT_CRITICAL(&snapshot_lock);
+  if (decoded.generation == runtime.decoder_generation) return;
+  runtime.decoder_generation = decoded.generation;
+  ESP_LOGI(kTag,
+           "Decoder generation=%lu health=%u positionValid=%u position=%u "
+           "movementValid=%u movement=%u obstructed=%u predicates=%u rules=%u",
+           static_cast<unsigned long>(decoded.generation),
+           static_cast<unsigned>(decoded.health),
+           static_cast<unsigned>(decoded.position_valid),
+           static_cast<unsigned>(decoded.position),
+           static_cast<unsigned>(decoded.movement_valid),
+           static_cast<unsigned>(decoded.movement),
+           static_cast<unsigned>(decoded.obstructed),
+           static_cast<unsigned>(runtime.decoder_diagnostics.predicate_count),
+           static_cast<unsigned>(runtime.decoder_diagnostics.rule_count));
+  for (std::uint8_t i = 0; i < runtime.decoder_diagnostics.predicate_count; ++i) {
+    const auto& diagnostic = runtime.decoder_diagnostics.predicates[i];
+    ESP_LOGI(kTag,
+             "Decoder predicate[%u]: value=%u evidenceValid=%u ageMs=%lu "
+             "latestIntervalMs=%lu qualifyingEdges=%u",
+             static_cast<unsigned>(i), static_cast<unsigned>(diagnostic.value),
+             static_cast<unsigned>(diagnostic.evidence_valid),
+             static_cast<unsigned long>(diagnostic.evidence_age_ms),
+             static_cast<unsigned long>(diagnostic.latest_interval_ms),
+             static_cast<unsigned>(diagnostic.qualifying_edge_count));
+  }
+  for (std::uint8_t i = 0; i < runtime.decoder_diagnostics.rule_count; ++i) {
+    const auto& diagnostic = runtime.decoder_diagnostics.rules[i];
+    ESP_LOGI(kTag,
+             "Decoder rule[%u]: id=%u expression=%u asserted=%u phase=%u "
+             "matchAgeMs=%lu",
+             static_cast<unsigned>(i), static_cast<unsigned>(diagnostic.id),
+             static_cast<unsigned>(diagnostic.expression_value),
+             static_cast<unsigned>(diagnostic.output_asserted),
+             static_cast<unsigned>(diagnostic.movement_phase),
+             static_cast<unsigned long>(diagnostic.match_age_ms));
+  }
+  if (decoded.health == gate::signal_decoder::DecoderHealth::kAmbiguousPosition ||
+      decoded.health == gate::signal_decoder::DecoderHealth::kAmbiguousMovement ||
+      decoded.health == gate::signal_decoder::DecoderHealth::kMonitoringFailed) {
+    apply_event({gate::controller::EventType::kDecoderFault}, now);
+    return;
+  }
+  if (decoded.position_valid) {
+    apply_event({gate::controller::EventType::kObservationStable,
+                 gate::controller::Target::kOpen,
+                 decoded.position == gate::signal_decoder::PositionValue::kOpened
+                     ? gate::controller::EndpointObservation::kOpened
+                     : gate::controller::EndpointObservation::kClosed}, now);
+  } else if (decoded.movement_valid) {
+    const auto type =
+        decoded.movement == gate::signal_decoder::MovementValue::kOpening
+            ? gate::controller::EventType::kExternalOpening
+            : decoded.movement == gate::signal_decoder::MovementValue::kClosing
+                  ? gate::controller::EventType::kExternalClosing
+                  : gate::controller::EventType::kExternalStopped;
+    apply_event({type}, now);
+  }
+  apply_event({decoded.obstructed
+                   ? gate::controller::EventType::kDecoderObstructed
+                   : gate::controller::EventType::kDecoderHealthy}, now);
+}
+
+void consume_custom_sample(const gate::hardware::FeedbackSample& sample,
+                           std::uint32_t now) {
+  if (runtime.decoder == nullptr) return;
+  for (std::uint8_t i = 0; i < sample.count; ++i) {
+    if (!runtime.decoder->update(sample.levels[i].id, sample.levels[i].level,
+                                 sample.timestamp_ms)) {
+      runtime.decoder->initialize(sample.levels[i].id, sample.levels[i].level,
+                                  sample.timestamp_ms);
+    }
+  }
+  runtime.decoder->advance(now);
+  apply_decoder_result(now);
+}
+
 RequestResult apply_event(const gate::controller::Event& event,
                           std::uint32_t now) {
   const auto transition = gate::controller::reduce(
@@ -171,7 +301,8 @@ RequestResult apply_event(const gate::controller::Event& event,
     arm(&runtime.feedback_stability, now,
         runtime.config.gate_operator.endpoint_stability_ms);
   }
-  ESP_LOGI(kTag, "Controller state=%s target=%s observation=%s valid=%d pulse=%d fault=%s",
+  ESP_LOGI(kTag, "Controller event=%s state=%s target=%s observation=%s valid=%d pulse=%d fault=%s",
+           event_name(event.type),
            gate::controller::to_string(runtime.snapshot.state),
            gate::controller::to_string(runtime.snapshot.target),
            gate::controller::to_string(runtime.snapshot.pending_observation),
@@ -184,6 +315,13 @@ RequestResult apply_event(const gate::controller::Event& event,
 }
 
 void process_expired(std::uint32_t now) {
+  if (runtime.decoder != nullptr) {
+    const auto deadline = runtime.decoder->next_deadline();
+    if (deadline.valid && reached(now, deadline.at)) {
+      runtime.decoder->advance(now);
+      apply_decoder_result(now);
+    }
+  }
   if (runtime.pulse.active && reached(now, runtime.pulse.at_ms)) {
     runtime.pulse.active = false;
     const esp_err_t result = gate::hardware::deactivate_all();
@@ -220,22 +358,42 @@ TickType_t wait_ticks(std::uint32_t now) {
     if (reached(now, deadline->at_ms)) return 0;
     wait_ms = std::min(wait_ms, deadline->at_ms - now);
   }
+  if (runtime.decoder != nullptr) {
+    const auto deadline = runtime.decoder->next_deadline();
+    if (deadline.valid) {
+      if (reached(now, deadline.at)) return 0;
+      wait_ms = std::min(wait_ms, deadline.at - now);
+    }
+  }
   return wait_ms == kNoDeadline ? portMAX_DELAY : pdMS_TO_TICKS(wait_ms);
 }
 
 void controller_task(void*) {
   const std::uint32_t boot_ms = now_ms();
-  apply_event({gate::controller::EventType::kBoot,
-               gate::controller::Target::kOpen,
-               normalize(gate::hardware::feedback_assertions())},
-              boot_ms);
+  if (runtime.decoder != nullptr) {
+    apply_event({gate::controller::EventType::kBoot}, boot_ms);
+    consume_custom_sample(gate::hardware::feedback_sample(), boot_ms);
+  } else {
+    apply_event({gate::controller::EventType::kBoot,
+                 gate::controller::Target::kOpen,
+                 normalize(gate::hardware::feedback_assertions())},
+                boot_ms);
+  }
   runtime_active.store(true);
   while (true) {
     const std::uint32_t before_wait = now_ms();
     process_expired(before_wait);
     RuntimeMessage message{{gate::controller::EventType::kBoot}};
     if (xQueueReceive(runtime.queue, &message, wait_ticks(before_wait)) == pdPASS) {
-      const RequestResult result = apply_event(message.event, now_ms());
+      const std::uint32_t received_at = now_ms();
+      const bool custom_sample_wakeup =
+          runtime.decoder != nullptr && message.has_feedback_sample;
+      if (custom_sample_wakeup) {
+        consume_custom_sample(message.feedback_sample, received_at);
+      }
+      const RequestResult result = custom_sample_wakeup
+                                       ? RequestResult::kAccepted
+                                       : apply_event(message.event, received_at);
       if (message.reply_task != nullptr) {
         xTaskNotify(message.reply_task, static_cast<std::uint32_t>(result) + 1U,
                     eSetValueWithOverwrite);
@@ -249,6 +407,17 @@ void controller_task(void*) {
 esp_err_t start(const gate::config::AppConfig& config) {
   if (runtime.queue != nullptr) return ESP_ERR_INVALID_STATE;
   runtime.config = config;
+  if (config.gate_operator.decoder.profile ==
+      gate::config::FeedbackDecoderProfile::kCustomRules) {
+    gate::signal_decoder::CompileError compile_error;
+    if (!gate::signal_decoder::compile(config.gate_operator.decoder.rules,
+                                       &runtime.compiled_decoder,
+                                       &compile_error)) {
+      return ESP_ERR_INVALID_ARG;
+    }
+    runtime.decoder = std::make_unique<gate::signal_decoder::SignalDecoder>(
+        runtime.compiled_decoder);
+  }
   runtime.queue = xQueueCreate(kQueueLength, sizeof(RuntimeMessage));
   if (runtime.queue == nullptr) return ESP_ERR_NO_MEM;
   runtime.pulse_guard =
@@ -259,7 +428,9 @@ esp_err_t start(const gate::config::AppConfig& config) {
     return ESP_ERR_NO_MEM;
   }
   esp_err_t result = gate::hardware::start_monitoring(
-      config, sensor_changed, &runtime.queue);
+      config, runtime.decoder == nullptr ? sensor_changed : nullptr,
+      &runtime.queue,
+      runtime.decoder != nullptr ? decoded_sample_changed : nullptr);
   if (result != ESP_OK) {
     release_runtime_resources();
     return result;
@@ -348,6 +519,20 @@ Snapshot snapshot() {
           current.pulse_active,
           gate::controller::obstructed(current),
           current.fault};
+}
+
+DecoderSnapshot decoder_snapshot() {
+  // Diagnostics are 840 bytes at current limits. Copying while holding the
+  // critical section gives REST one coherent generation; callers must provide
+  // a task stack sized for this explicitly bounded snapshot.
+  static_assert(sizeof(gate::signal_decoder::DecoderDiagnostics) <= 1024,
+                "Reassess REST snapshot and HTTP task stack capacity");
+  taskENTER_CRITICAL(&snapshot_lock);
+  const DecoderSnapshot current{runtime.decoder != nullptr,
+                                runtime.decoder_result,
+                                runtime.decoder_diagnostics};
+  taskEXIT_CRITICAL(&snapshot_lock);
+  return current;
 }
 
 }  // namespace gate::runtime

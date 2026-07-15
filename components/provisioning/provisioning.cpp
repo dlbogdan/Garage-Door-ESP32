@@ -5,7 +5,6 @@
 #include "app_config.hpp"
 #include "bootstrap_credentials.hpp"
 #include "captive_dns.hpp"
-#include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "homespan_compatibility.hpp"
@@ -19,14 +18,12 @@ constexpr char kTag[] = "provisioning";
 
 }  // namespace
 
-esp_err_t start() {
+esp_err_t start(const gate::config::AppConfig* active_config) {
   gate::bootstrap::Credentials credentials;
   esp_err_t result = gate::bootstrap::load_or_create(&credentials);
   if (result != ESP_OK) return result;
 
-  gate::config::AppConfig active_config;
-  const bool application_provisioned =
-      gate::config::ConfigRepository().load(&active_config) == ESP_OK;
+  const bool application_provisioned = active_config != nullptr;
 
   if (!application_provisioned && credentials.station_ssid[0] != '\0') {
     const esp_err_t connect_result = gate::homekit::connect_bootstrap_station(
@@ -39,14 +36,14 @@ esp_err_t start() {
 
   ESP_RETURN_ON_ERROR(
       gate::network::start({credentials.ap_password,
-                            application_provisioned,
-                            application_provisioned
-                                ? active_config.wifi.connection_deadline_ms
-                                : 30000}),
+                             application_provisioned,
+                             application_provisioned
+                                 ? active_config->wifi.connection_deadline_ms
+                                 : 30000}),
       kTag, "Could not start setup network");
   ESP_RETURN_ON_ERROR(
       gate::management::start(credentials, application_provisioned,
-                              application_provisioned ? &active_config : nullptr),
+                              active_config),
       kTag, "Could not start management web server");
   ESP_RETURN_ON_ERROR(gate::captive_dns::start(), kTag,
                       "Could not start captive DNS");

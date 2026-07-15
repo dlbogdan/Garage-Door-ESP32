@@ -4,8 +4,104 @@
 #include <array>
 #include <cctype>
 
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+#endif
+
 namespace gate::config {
 namespace {
+
+#ifdef ESP_PLATFORM
+constexpr char kTag[] = "app_config";
+
+void log_decoder_config(
+    const FeedbackDecoderConfig& decoder, bool accepted,
+    const gate::signal_decoder::CompileError& error) {
+  const auto& rules = decoder.rules;
+  ESP_LOGI(kTag,
+           "Decoder rules %s: code=%u ruleId=%u groupIndex=%u "
+           "predicateIndex=%u inputCount=%u ruleCount=%u",
+           accepted ? "validated" : "rejected",
+           static_cast<unsigned>(error.code), static_cast<unsigned>(error.rule_id),
+           static_cast<unsigned>(error.group_index),
+           static_cast<unsigned>(error.predicate_index),
+           static_cast<unsigned>(rules.input_count),
+           static_cast<unsigned>(rules.rule_count));
+
+  const std::uint8_t input_count = std::min<std::uint8_t>(
+      decoder.input_count, gate::signal_decoder::DecoderLimits::kMaxInputs);
+  for (std::uint8_t i = 0; i < input_count; ++i) {
+    const auto& input = decoder.inputs[i];
+    ESP_LOGI(kTag,
+             "Decoder input[%u]: id=%u label='%s' gpio=%d activeLevel=%u "
+             "pull=%u debounceMs=%lu ruleInputId=%u",
+             static_cast<unsigned>(i), static_cast<unsigned>(input.id),
+             input.label.c_str(), input.electrical.gpio,
+             static_cast<unsigned>(input.electrical.active_level),
+             static_cast<unsigned>(input.electrical.pull),
+             static_cast<unsigned long>(input.electrical.debounce_ms),
+             i < rules.input_count
+                 ? static_cast<unsigned>(rules.input_ids[i])
+                 : 0U);
+  }
+
+  const std::uint8_t rule_count = std::min<std::uint8_t>(
+      rules.rule_count, gate::signal_decoder::DecoderLimits::kMaxRules);
+  for (std::uint8_t r = 0; r < rule_count; ++r) {
+    const auto& rule = rules.rules[r];
+    ESP_LOGI(kTag,
+             "Decoder rule[%u]: id=%u label='%s' enabled=%u outputKind=%u "
+             "position=%u movement=%u fault=%u groupCount=%u entryMs=%lu "
+             "lossMs=%lu ageLimitMs=%lu expiry=%u",
+             static_cast<unsigned>(r), static_cast<unsigned>(rule.id),
+             decoder.rule_labels[r].c_str(),
+             static_cast<unsigned>(rule.enabled),
+             static_cast<unsigned>(rule.output.kind),
+             static_cast<unsigned>(rule.output.position),
+             static_cast<unsigned>(rule.output.movement),
+             static_cast<unsigned>(rule.output.fault),
+             static_cast<unsigned>(rule.group_count),
+             static_cast<unsigned long>(rule.movement.entry_confirmation_ms),
+             static_cast<unsigned long>(rule.movement.loss_confirmation_ms),
+             static_cast<unsigned long>(rule.movement.match_age_limit_ms),
+             static_cast<unsigned>(rule.movement.expiry));
+
+    const std::uint8_t group_count = std::min<std::uint8_t>(
+        rule.group_count,
+        gate::signal_decoder::DecoderLimits::kMaxGroupsPerRule);
+    for (std::uint8_t g = 0; g < group_count; ++g) {
+      const auto& group = rule.groups[g];
+      ESP_LOGI(kTag, "Decoder rule[%u] group[%u]: predicateCount=%u",
+               static_cast<unsigned>(r), static_cast<unsigned>(g),
+               static_cast<unsigned>(group.predicate_count));
+      const std::uint8_t predicate_count = std::min<std::uint8_t>(
+          group.predicate_count,
+          gate::signal_decoder::DecoderLimits::kMaxPredicatesPerGroup);
+      for (std::uint8_t p = 0; p < predicate_count; ++p) {
+        const auto& predicate = group.predicates[p];
+        ESP_LOGI(kTag,
+                 "Decoder rule[%u] group[%u] predicate[%u]: kind=%u "
+                 "inputId=%u stableLevel=%u holdMs=%lu minIntervalMs=%lu "
+                 "maxIntervalMs=%lu minEdges=%u windowMs=%lu maxGapMs=%lu",
+                 static_cast<unsigned>(r), static_cast<unsigned>(g),
+                 static_cast<unsigned>(p),
+                 static_cast<unsigned>(predicate.kind),
+                 static_cast<unsigned>(predicate.input_id),
+                 static_cast<unsigned>(predicate.stable.level),
+                 static_cast<unsigned long>(predicate.stable.hold_ms),
+                 static_cast<unsigned long>(
+                     predicate.periodic.minimum_interval_ms),
+                 static_cast<unsigned long>(
+                     predicate.periodic.maximum_interval_ms),
+                 static_cast<unsigned>(predicate.periodic.minimum_edges),
+                 static_cast<unsigned long>(
+                     predicate.periodic.observation_window_ms),
+                 static_cast<unsigned long>(predicate.periodic.maximum_gap_ms));
+      }
+    }
+  }
+}
+#endif
 
 void add_error(std::vector<ValidationError>* errors, const char* field,
                const char* code, const char* message) {
@@ -122,20 +218,83 @@ std::vector<ValidationError> validate(const AppConfig& config) {
               "Unsupported operator profile");
   }
 
-  const FeedbackInputConfig* inputs[2]{};
-  const char* input_fields[2]{};
+  const FeedbackInputConfig*
+      inputs[gate::signal_decoder::DecoderLimits::kMaxInputs]{};
+  const char* input_fields[gate::signal_decoder::DecoderLimits::kMaxInputs]{};
   std::size_t input_count = 0;
-  if (operator_config.feedback_topology == FeedbackTopology::kSingle) {
-    inputs[input_count] = &operator_config.single_feedback;
-    input_fields[input_count++] = "operator.feedback.single";
-  } else if (operator_config.feedback_topology == FeedbackTopology::kDual) {
-    inputs[input_count] = &operator_config.opened_feedback;
-    input_fields[input_count++] = "operator.feedback.opened";
-    inputs[input_count] = &operator_config.closed_feedback;
-    input_fields[input_count++] = "operator.feedback.closed";
+  if (operator_config.decoder.profile ==
+      FeedbackDecoderProfile::kEndpointPreset) {
+    if (operator_config.feedback_topology == FeedbackTopology::kSingle) {
+      inputs[input_count] = &operator_config.single_feedback;
+      input_fields[input_count++] = "operator.feedback.single";
+    } else if (operator_config.feedback_topology == FeedbackTopology::kDual) {
+      inputs[input_count] = &operator_config.opened_feedback;
+      input_fields[input_count++] = "operator.feedback.opened";
+      inputs[input_count] = &operator_config.closed_feedback;
+      input_fields[input_count++] = "operator.feedback.closed";
+    } else {
+      add_error(&errors, "operator.feedback.mode", "unsupported",
+                "Unsupported feedback topology");
+    }
+  } else if (operator_config.decoder.profile ==
+             FeedbackDecoderProfile::kCustomRules) {
+    if (operator_config.decoder.input_count == 0 ||
+        operator_config.decoder.input_count >
+            gate::signal_decoder::DecoderLimits::kMaxInputs) {
+      add_error(&errors, "operator.decoder.inputs", "count",
+                "Custom decoder requires 1-4 feedback inputs");
+    } else {
+      for (std::uint8_t index = 0; index < operator_config.decoder.input_count;
+           ++index) {
+        if (operator_config.decoder.inputs[index].label.empty() ||
+            operator_config.decoder.inputs[index].label.size() > 32) {
+          add_error(&errors, "operator.decoder.inputs.label", "length",
+                    "Decoder input labels must be 1-32 bytes");
+        }
+        inputs[input_count] =
+            &operator_config.decoder.inputs[index].electrical;
+        input_fields[input_count++] = "operator.decoder.inputs";
+      }
+    }
+    const auto& rules = operator_config.decoder.rules;
+    for (std::uint8_t index = 0; index < rules.rule_count; ++index) {
+      if (operator_config.decoder.rule_labels[index].empty() ||
+          operator_config.decoder.rule_labels[index].size() > 32) {
+        add_error(&errors, "operator.decoder.rules.label", "length",
+                  "Decoder rule labels must be 1-32 bytes");
+      }
+    }
+    bool ids_match = rules.input_count == operator_config.decoder.input_count;
+    if (ids_match) {
+      for (std::uint8_t index = 0; index < rules.input_count; ++index) {
+        if (rules.input_ids[index] != operator_config.decoder.inputs[index].id) {
+          ids_match = false;
+          break;
+        }
+      }
+    }
+    if (!ids_match) {
+      add_error(&errors, "operator.decoder.rules.inputIds", "mismatch",
+                "Rule input IDs must match declared decoder inputs");
+    } else {
+      gate::signal_decoder::CompiledDecoder compiled;
+      gate::signal_decoder::CompileError compile_error;
+      const bool rules_valid =
+          gate::signal_decoder::compile(rules, &compiled, &compile_error);
+#ifdef ESP_PLATFORM
+      log_decoder_config(operator_config.decoder, rules_valid, compile_error);
+#endif
+      if (!rules_valid) {
+        errors.push_back({"operator.decoder.rules", "invalid",
+                          "Custom decoder rules are invalid (code " +
+                              std::to_string(static_cast<unsigned>(
+                                  compile_error.code)) +
+                              ")"});
+      }
+    }
   } else {
-    add_error(&errors, "operator.feedback.mode", "unsupported",
-              "Unsupported feedback topology");
+    add_error(&errors, "operator.decoder.profile", "unsupported",
+              "Unsupported feedback decoder profile");
   }
 
   for (std::size_t index = 0; index < output_count; ++index) {
@@ -153,7 +312,9 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     add_error(&errors, "operator.minimumIntervalMs", "range",
               "Minimum interval must be 500-10000 ms");
   }
-  if (!in_range(operator_config.endpoint_stability_ms, 1000, 10000)) {
+  if (operator_config.decoder.profile ==
+          FeedbackDecoderProfile::kEndpointPreset &&
+      !in_range(operator_config.endpoint_stability_ms, 1000, 10000)) {
     add_error(&errors, "operator.feedback.stabilityMs", "range",
               "Endpoint stability must be 1-10 seconds");
   }
@@ -186,10 +347,14 @@ std::vector<ValidationError> validate(const AppConfig& config) {
       }
     }
   }
-  if (input_count == 2 && inputs[0]->gpio >= 0 &&
-      inputs[0]->gpio == inputs[1]->gpio) {
-    errors.push_back({std::string(input_fields[1]) + ".gpio", "collision",
-                      "Feedback GPIOs must differ"});
+  for (std::size_t left = 0; left < input_count; ++left) {
+    for (std::size_t right = left + 1; right < input_count; ++right) {
+      if (inputs[left]->gpio >= 0 &&
+          inputs[left]->gpio == inputs[right]->gpio) {
+        errors.push_back({std::string(input_fields[right]) + ".gpio",
+                          "collision", "Feedback GPIOs must differ"});
+      }
+    }
   }
   if (!in_range(config.timing.opening_ms, 3000, 180000) ||
       !in_range(config.timing.closing_ms, 3000, 180000)) {
@@ -214,3 +379,4 @@ std::vector<ValidationError> validate(const AppConfig& config) {
 }
 
 }  // namespace gate::config
+

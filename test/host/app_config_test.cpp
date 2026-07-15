@@ -95,6 +95,45 @@ void test_timing_and_admin_validation() {
   expect(has_field(gate::config::validate(config), "admin.password"),
          "missing administrator verifier must be rejected");
 }
+
+void test_custom_decoder_validation() {
+  auto config = valid_config();
+  auto& decoder = config.gate_operator.decoder;
+  decoder.profile = gate::config::FeedbackDecoderProfile::kCustomRules;
+  decoder.input_count = 1;
+  decoder.inputs[0].id = 7;
+  decoder.inputs[0].label = "Status";
+  decoder.inputs[0].electrical.gpio = 27;
+  decoder.inputs[0].electrical.active_level = gate::config::ActiveLevel::kHigh;
+  decoder.rules.input_count = 1;
+  decoder.rules.input_ids[0] = 7;
+  decoder.rules.rule_count = 1;
+  auto& opened = decoder.rules.rules[0];
+  decoder.rule_labels[0] = "Opened";
+  opened.id = 1;
+  opened.enabled = true;
+  opened.output.kind = gate::signal_decoder::RuleOutputKind::kPosition;
+  opened.output.position = gate::signal_decoder::PositionValue::kOpened;
+  opened.group_count = 1;
+  opened.groups[0].predicate_count = 1;
+  opened.groups[0].predicates[0].kind =
+      gate::signal_decoder::PredicateKind::kStableLevel;
+  opened.groups[0].predicates[0].input_id = 7;
+  opened.groups[0].predicates[0].stable = {true, 2500};
+  expect(gate::config::validate(config).empty(),
+         "valid custom decoder input and rule must validate");
+
+  decoder.rules.input_ids[0] = 8;
+  expect(has_field(gate::config::validate(config),
+                   "operator.decoder.rules.inputIds"),
+         "custom rule input IDs must match declared electrical inputs");
+
+  decoder.rules.input_ids[0] = 7;
+  decoder.inputs[0].electrical.gpio = config.gate_operator.step.gpio;
+  expect(has_field(gate::config::validate(config),
+                   "operator.decoder.inputs.gpio"),
+         "custom feedback GPIO must not collide with actuator GPIO");
+}
 }  // namespace
 
 int main() {
@@ -103,6 +142,7 @@ int main() {
   test_gpio_validation();
   test_directional_dual_configuration();
   test_timing_and_admin_validation();
+  test_custom_decoder_validation();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "All application configuration tests passed\n";
   return EXIT_SUCCESS;

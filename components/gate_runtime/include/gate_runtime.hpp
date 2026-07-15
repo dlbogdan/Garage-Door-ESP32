@@ -25,6 +25,12 @@ struct Snapshot {
   gate::controller::FaultReason fault;
 };
 
+struct DecoderSnapshot {
+  bool active{false};
+  gate::signal_decoder::DecoderResult result{};
+  gate::signal_decoder::DecoderDiagnostics diagnostics{};
+};
+
 // Starts the single-owner reducer runtime.
 esp_err_t start(const gate::config::AppConfig& config);
 bool active();
@@ -40,5 +46,6 @@ bool maintenance_active();
 RequestResult request_bench_pulse();
 RequestResult request_target(gate::controller::Target target);
 Snapshot snapshot();
+DecoderSnapshot decoder_snapshot();
 
 }  // namespace gate::runtime

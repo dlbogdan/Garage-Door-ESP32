@@ -1,18 +1,25 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "signal_decoder.hpp"
+
 namespace gate::config {
 
-inline constexpr std::uint32_t kSchemaVersion = 3;
+inline constexpr std::uint32_t kSchemaVersion = 4;
 
 enum class ActiveLevel : std::uint8_t { kLow = 0, kHigh = 1 };
 enum class SensorPull : std::uint8_t { kNone = 0, kUp = 1, kDown = 2 };
 enum class FeedbackEndpoint : std::uint8_t { kOpen = 0, kClosed = 1 };
 enum class OperatorProfile : std::uint8_t { kSequential = 0, kDirectional = 1 };
 enum class FeedbackTopology : std::uint8_t { kSingle = 0, kDual = 1 };
+enum class FeedbackDecoderProfile : std::uint8_t {
+  kEndpointPreset = 0,
+  kCustomRules = 1,
+};
 
 struct WifiConfig {
   std::string ssid;
@@ -44,6 +51,23 @@ struct FeedbackInputConfig {
   std::uint32_t debounce_ms{50};
 };
 
+struct DecoderInputConfig {
+  gate::signal_decoder::InputId id{0};
+  std::string label;
+  FeedbackInputConfig electrical;
+};
+
+struct FeedbackDecoderConfig {
+  FeedbackDecoderProfile profile{FeedbackDecoderProfile::kEndpointPreset};
+  std::array<DecoderInputConfig,
+             gate::signal_decoder::DecoderLimits::kMaxInputs>
+      inputs{};
+  std::uint8_t input_count{0};
+  gate::signal_decoder::DecoderConfig rules;
+  std::array<std::string, gate::signal_decoder::DecoderLimits::kMaxRules>
+      rule_labels{};
+};
+
 struct OperatorConfig {
   OperatorProfile profile{OperatorProfile::kSequential};
   PulseOutputConfig step;
@@ -57,6 +81,7 @@ struct OperatorConfig {
   FeedbackInputConfig opened_feedback;
   FeedbackInputConfig closed_feedback;
   std::uint32_t endpoint_stability_ms{2000};
+  FeedbackDecoderConfig decoder;
 };
 
 struct TimingConfig {

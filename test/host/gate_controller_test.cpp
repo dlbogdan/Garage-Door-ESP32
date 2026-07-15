@@ -146,6 +146,56 @@ void test_timeout_and_busy_are_atomic() {
   expect(completed.effects.actuator_command == ActuatorCommand::kNone,
          "pulse completion must never replay rejected command");
 }
+
+void test_external_decoder_events_never_actuate() {
+  const auto opening =
+      reduce(at(State::kUnknownStopped, Target::kClosed),
+             {EventType::kExternalOpening});
+  expect(opening.next.state == State::kOpening &&
+             opening.next.movement == MovementDirection::kOpening &&
+             opening.effects.start_opening_timer &&
+             opening.effects.actuator_command == ActuatorCommand::kNone,
+         "decoded external opening must update movement without a pulse");
+
+  const auto obstructed =
+      reduce(opening.next, {EventType::kDecoderObstructed});
+  expect(obstructed.next.fault == FaultReason::kDecodedObstruction &&
+             obstructed.effects.actuator_command == ActuatorCommand::kNone,
+         "decoded obstruction must set fault without a pulse");
+
+  const auto endpoint =
+      reduce(obstructed.next,
+             {EventType::kObservationStable, Target::kOpen,
+              EndpointObservation::kOpened});
+  expect(endpoint.next.state == State::kOpen &&
+             endpoint.next.fault == FaultReason::kNone,
+         "proved endpoint must clear decoded obstruction");
+
+  const auto fault = reduce(endpoint.next, {EventType::kDecoderFault});
+  expect(fault.next.state == State::kUnknownStopped &&
+             fault.next.fault == FaultReason::kDecoderFault &&
+             fault.effects.cancel_travel_timers &&
+             fault.effects.actuator_command == ActuatorCommand::kNone,
+         "decoder ambiguity/health fault must stop and interlock without pulse");
+  const auto blocked =
+      reduce(fault.next, {EventType::kTargetRequested, Target::kClosed});
+  expect(blocked.command_result == CommandResult::kRejectedBusy &&
+             blocked.effects.actuator_command == ActuatorCommand::kNone,
+         "decoder fault must interlock target commands");
+
+  const auto still_faulted =
+      reduce(fault.next,
+             {EventType::kObservationStable, Target::kOpen,
+              EndpointObservation::kClosed});
+  expect(still_faulted.next.state == State::kClosed &&
+             still_faulted.next.fault == FaultReason::kDecoderFault,
+         "endpoint authority must not clear decoder ambiguity/monitoring fault");
+
+  const auto recovered =
+      reduce(still_faulted.next, {EventType::kDecoderHealthy});
+  expect(recovered.next.fault == FaultReason::kNone,
+         "explicit decoder health recovery must clear decoder fault");
+}
 }  // namespace
 
 int main() {
@@ -154,6 +204,7 @@ int main() {
   test_directional_direct_reversal();
   test_observation_pipeline_and_contradiction();
   test_timeout_and_busy_are_atomic();
+  test_external_decoder_events_never_actuate();
   if (failures) return EXIT_FAILURE;
   std::cout << "All gate controller tests passed\n";
   return EXIT_SUCCESS;

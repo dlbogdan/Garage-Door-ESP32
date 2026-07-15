@@ -39,7 +39,7 @@ if [ -n "${FIRMWARE_VERSION:-}" ]; then
   RELEASE_BUILD_DIR="build-release/$FIRMWARE_VERSION"
   echo "Release firmware version: $FIRMWARE_VERSION"
   python "$IDF_PATH/tools/idf.py" -B "$RELEASE_BUILD_DIR" \
-    -D "PROJECT_VER=$FIRMWARE_VERSION" build "$@"
+    -D "GATE_RELEASE_VERSION=$FIRMWARE_VERSION" build "$@"
   echo "Release OTA image: $RELEASE_BUILD_DIR/garage_door_esp32.bin"
 else
   python "$IDF_PATH/tools/idf.py" build "$@"

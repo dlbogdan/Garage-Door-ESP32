@@ -24,6 +24,12 @@ enum class EventType : std::uint8_t {
   kMaintenancePulseRequested,
   kObservationChanged,
   kObservationStable,
+  kExternalOpening,
+  kExternalClosing,
+  kExternalStopped,
+  kDecoderObstructed,
+  kDecoderHealthy,
+  kDecoderFault,
   kOpeningTimerExpired,
   kClosingTimerExpired,
   kPulseCompleted,
@@ -34,6 +40,8 @@ enum class FaultReason : std::uint8_t {
   kNone,
   kTravelTimeout,
   kFeedbackContradiction,
+  kDecodedObstruction,
+  kDecoderFault,
 };
 
 enum class CommandResult : std::uint8_t {

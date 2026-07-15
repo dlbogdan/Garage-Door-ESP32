@@ -140,7 +140,8 @@ Transition reduce(const Snapshot& current, const Event& event,
         transition.command_result = CommandResult::kRejectedBusy;
         break;
       }
-      if (current.fault == FaultReason::kFeedbackContradiction) {
+      if (current.fault == FaultReason::kFeedbackContradiction ||
+          current.fault == FaultReason::kDecoderFault) {
         transition.command_result = CommandResult::kRejectedBusy;
         break;
       }
@@ -157,7 +158,8 @@ Transition reduce(const Snapshot& current, const Event& event,
     }
     case EventType::kMaintenancePulseRequested:
       if (current.pulse_active ||
-          current.fault == FaultReason::kFeedbackContradiction) {
+          current.fault == FaultReason::kFeedbackContradiction ||
+          current.fault == FaultReason::kDecoderFault) {
         transition.command_result = CommandResult::kRejectedBusy;
       } else {
         const ActuatorCommand command =
@@ -187,12 +189,18 @@ Transition reduce(const Snapshot& current, const Event& event,
         transition.next.state = State::kOpen;
         transition.next.target = Target::kOpen;
         transition.next.movement = MovementDirection::kNone;
-        transition.next.fault = FaultReason::kNone;
+        if (current.fault == FaultReason::kDecodedObstruction ||
+            current.fault == FaultReason::kTravelTimeout) {
+          transition.next.fault = FaultReason::kNone;
+        }
       } else if (event.observation == EndpointObservation::kClosed) {
         transition.next.state = State::kClosed;
         transition.next.target = Target::kClosed;
         transition.next.movement = MovementDirection::kNone;
-        transition.next.fault = FaultReason::kNone;
+        if (current.fault == FaultReason::kDecodedObstruction ||
+            current.fault == FaultReason::kTravelTimeout) {
+          transition.next.fault = FaultReason::kNone;
+        }
       } else if (event.observation == EndpointObservation::kContradictory) {
         transition.next.state =
             current.last_movement == MovementDirection::kOpening
@@ -211,6 +219,45 @@ Transition reduce(const Snapshot& current, const Event& event,
         // a locally initiated movement or invent external direction.
         transition.effects.cancel_travel_timers = false;
       }
+      break;
+    case EventType::kExternalOpening:
+      transition.next.state = State::kOpening;
+      transition.next.target = Target::kOpen;
+      transition.next.movement = MovementDirection::kOpening;
+      transition.next.last_movement = MovementDirection::kOpening;
+      transition.effects.start_opening_timer = true;
+      break;
+    case EventType::kExternalClosing:
+      transition.next.state = State::kClosing;
+      transition.next.target = Target::kClosed;
+      transition.next.movement = MovementDirection::kClosing;
+      transition.next.last_movement = MovementDirection::kClosing;
+      transition.effects.start_closing_timer = true;
+      break;
+    case EventType::kExternalStopped:
+      transition.next.state =
+          current.movement == MovementDirection::kOpening
+              ? State::kStoppedOpening
+              : current.movement == MovementDirection::kClosing
+                    ? State::kStoppedClosing
+                    : State::kUnknownStopped;
+      transition.next.movement = MovementDirection::kNone;
+      transition.effects.cancel_travel_timers = true;
+      break;
+    case EventType::kDecoderObstructed:
+      transition.next.fault = FaultReason::kDecodedObstruction;
+      break;
+    case EventType::kDecoderHealthy:
+      if (current.fault == FaultReason::kDecodedObstruction ||
+          current.fault == FaultReason::kDecoderFault) {
+        transition.next.fault = FaultReason::kNone;
+      }
+      break;
+    case EventType::kDecoderFault:
+      transition.next.state = State::kUnknownStopped;
+      transition.next.movement = MovementDirection::kNone;
+      transition.next.fault = FaultReason::kDecoderFault;
+      transition.effects.cancel_travel_timers = true;
       break;
     case EventType::kOpeningTimerExpired:
       if (current.state == State::kOpening) {
@@ -267,6 +314,8 @@ const char* to_string(FaultReason fault) {
     case FaultReason::kNone: return "NONE";
     case FaultReason::kTravelTimeout: return "TRAVEL_TIMEOUT";
     case FaultReason::kFeedbackContradiction: return "FEEDBACK_CONTRADICTION";
+    case FaultReason::kDecodedObstruction: return "DECODED_OBSTRUCTION";
+    case FaultReason::kDecoderFault: return "DECODER_FAULT";
   }
   return "UNKNOWN";
 }
