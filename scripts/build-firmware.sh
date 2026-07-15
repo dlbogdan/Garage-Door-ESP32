@@ -13,7 +13,7 @@ fi
 set -u
 "$(dirname "$0")/verify-environment.sh"
 
-UI_ASSET="components/provisioning/assets/app.js"
+UI_ASSET="components/management_server/assets/app.js"
 if [ -f webui/package-lock.json ] && {
      [ ! -f "$UI_ASSET" ] ||
      [ -n "$(find webui/src webui/package.json webui/package-lock.json webui/vite.config.js webui/index.html -newer "$UI_ASSET" -print -quit 2>/dev/null)" ];
@@ -28,4 +28,20 @@ if [ ! -f sdkconfig ] || ! grep -q '^CONFIG_IDF_TARGET="esp32"$' sdkconfig; then
 else
   echo "ESP-IDF target is already esp32; preserving incremental build cache"
 fi
-python "$IDF_PATH/tools/idf.py" build "$@"
+
+if [ -n "${FIRMWARE_VERSION:-}" ]; then
+  case "$FIRMWARE_VERSION" in
+    *[!0-9A-Za-z.+-]*|'')
+      echo "error: invalid FIRMWARE_VERSION: $FIRMWARE_VERSION" >&2
+      exit 1
+      ;;
+  esac
+  RELEASE_BUILD_DIR="build-release/$FIRMWARE_VERSION"
+  echo "Release firmware version: $FIRMWARE_VERSION"
+  python "$IDF_PATH/tools/idf.py" -B "$RELEASE_BUILD_DIR" \
+    -D "PROJECT_VER=$FIRMWARE_VERSION" build "$@"
+  echo "Release OTA image: $RELEASE_BUILD_DIR/garage_door_esp32.bin"
+else
+  python "$IDF_PATH/tools/idf.py" build "$@"
+  echo "Development OTA image: build/garage_door_esp32.bin"
+fi

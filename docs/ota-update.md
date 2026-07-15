@@ -16,8 +16,32 @@ The firmware now implements the functional A/B OTA path described here:
   project `garage_door_esp32`, and differ from the running version;
 - the embedded Svelte management UI provides firmware selection, progress,
   partition/version status, and automatic restart;
-- firmware version `0.3.0` is sourced from the ESP-IDF application descriptor
-  and is also reported to HomeKit.
+- firmware versions are sourced from the ESP-IDF application descriptor and
+  are also reported to HomeKit. The normal build script derives a deterministic
+  development version from the base semantic version, Git revision, and current
+  firmware/UI source changes (for example `0.3.2-dev-a1b2c3d4-e5f6a7b8`).
+
+Development fingerprints are derived by CMake, so the ESP-IDF extension's
+**Build Project** button and `scripts/build-firmware.sh` use the same versioning.
+Identical source produces the same version on repeated builds, while changed
+firmware/UI source produces a different version that passes the OTA same-version
+guard. CMake watches those inputs and reconfigures before an incremental build
+when one changes. The management-server CMake component directly runs the npm
+install/check/test/build pipeline and copies stale generated assets before
+embedding them. The extension button therefore packages the current Svelte
+output without invoking a project shell script.
+
+Release builds provide an explicit semantic version without modifying tracked
+files. They use a separate build directory so a release override cannot remain
+cached and accidentally affect later GUI development builds:
+
+```sh
+FIRMWARE_VERSION=0.3.3 ./scripts/build-firmware.sh
+```
+
+The release OTA artifact is
+`build-release/0.3.3/garage_door_esp32.bin`; development artifacts remain at
+`build/garage_door_esp32.bin`.
 
 The OTA writer uses `OTA_WITH_SEQUENTIAL_WRITES`. This is important on the
 dual-core classic ESP32: erasing the complete ~1.5 MiB destination range inside
@@ -27,6 +51,11 @@ sequential mode, sectors are erased incrementally as upload chunks are written.
 The HTTP receive buffer is heap-allocated rather than consuming 4 KiB of the
 HTTP server task's stack, preventing stack corruption during flash/network
 activity.
+
+The HTTP transport is implemented by the dedicated `ota_api` component. It
+owns firmware status/upload route validation, streams request bodies into the
+narrow `ota_manager` interface, and delegates authentication to `web_auth`.
+Neither OTA flash logic nor OTA HTTP handling is part of `provisioning`.
 
 The production signing/eFuse stage remains deliberately disabled. ESP-IDF
 validates image structure and checksum, but this development build does not yet

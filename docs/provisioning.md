@@ -84,3 +84,14 @@ credentials are not changed during station Wi-Fi migration.
   link, but HTTPS is not implemented.
 - No relay or sensor GPIO is initialized. Flashing this milestone cannot issue
   a gate command.
+
+# Provisioning and management boundaries
+
+The management plane is split by responsibility: `provisioning` coordinates
+bootstrap/fallback networking, captive DNS, and server startup;
+`management_server` owns the HTTP lifecycle, embedded UI assets, shared request
+utilities, and route-registration order; `setup_api` owns first-time setup;
+`management_api` owns authenticated administration; `ota_api` owns firmware
+update routes; and `web_auth` owns sessions, CSRF, and reauthorization.
+
+Firmware routes are registered before the wildcard captive-portal redirect.

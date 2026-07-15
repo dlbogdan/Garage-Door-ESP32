@@ -12,6 +12,6 @@ npm run check
 npm test -- --run
 npm run build
 
-ASSET_DIR="../components/provisioning/assets"
+ASSET_DIR="../components/management_server/assets"
 mkdir -p "$ASSET_DIR"
 cp dist/index.html dist/app.js dist/app.css "$ASSET_DIR/"

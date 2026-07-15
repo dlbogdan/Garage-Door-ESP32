@@ -272,7 +272,15 @@ Component responsibilities:
   NOT initiate station connections, initialize `esp_netif`, create default
   netifs, or initialize/start the ESP-IDF Wi-Fi driver directly. HomeSpan alone
   owns station `WiFi.begin()` and reconnect behavior.
-- `web_server`: REST API, authentication, sessions, CSRF protection, asset serving, captive-portal redirects.
+- `management_server`: management HTTP server lifecycle, embedded assets,
+  setup/management route registration, common HTTP responses, and
+  captive-portal redirects. Route families migrate into narrow API components.
+- `web_auth`: opaque sessions, cookie parsing, expiration, CSRF checks, and
+  administrator re-authorization shared by management API components.
+- `ota_api`: authenticated firmware status/upload HTTP adapter; it owns no
+  flash state and calls only the public `ota_manager` interface.
+- `ota_manager`: A/B flash state machine, image policy, boot selection, and
+  delayed rollback confirmation; it owns no HTTP/session concerns.
 - `embedded_ui`: generated Svelte static asset manifest and compressed binary assets.
 - `event_log`: bounded in-memory diagnostic ring buffer with redaction; optional compact persisted fault counters.
 
@@ -308,18 +316,19 @@ behavior in this order:
    remains the sole owner of station connect/reconnect.
 3. ✅ Extracted `captive_dns` into a task-owning component with explicit start/stop
    lifecycle and socket cleanup.
-4. ⏳ Extract `web_auth` with opaque sessions, cookie parsing, expiration,
+4. ✅ Extracted `web_auth` with opaque sessions, cookie parsing, expiration,
    constant-time token checks, CSRF enforcement, login/logout, and password
    rotation. Route handlers consume an authentication interface rather than
    global session state.
-5. ⏳ Extract `web_server` to own the ESP-IDF HTTP server, embedded assets, common
+5. ✅ `management_server` now owns the ESP-IDF HTTP server, embedded assets, common
    response/security headers, body parsing, and route registration.
-6. ⏳ Split handlers into `setup_api` (unprovisioned status and first-time save) and
-   `management_api` (configuration, runtime, HomeKit, relay test, Wi-Fi migration,
-   and reboot). Keep gate logic out of both; they may call only public runtime,
-   repository, hardware-status, and HomeSpan-bridge APIs.
-7. ⏳ Reduce `gate::provisioning::start()` to a compatibility coordinator, then
-   rename the top-level subsystem to `management` in a later isolated commit
+6. ✅ Extracted firmware routes into `ota_api`, unprovisioned status/save/staged
+   Wi-Fi routes into `setup_api`, and authenticated configuration, runtime,
+   HomeKit, relay-test, access, Wi-Fi migration, logout, and reboot routes into
+   `management_api`. Gate logic remains behind public runtime, repository,
+   hardware-status, and HomeSpan-bridge APIs.
+7. ✅ Reduced `gate::provisioning::start()` to a network/setup coordinator. Rename
+   the top-level subsystem to `management` in a later isolated commit
    after all callers and documentation have migrated.
 
 Each extraction MUST preserve the existing REST paths, Svelte payloads, NVS
