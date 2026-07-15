@@ -4,6 +4,7 @@
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
 #include "nvs_flash.h"
+#include "ota_manager.hpp"
 #include "provisioning.hpp"
 
 namespace {
@@ -56,5 +57,7 @@ extern "C" void app_main(void) {
                esp_err_to_name(homekit_result));
     }
   }
+  gate::ota::schedule_boot_confirmation(
+      result == ESP_OK && gate::runtime::active() && gate::homekit::active());
   ESP_LOGI(kTag, "Bench relay pulse and HomeKit target control enabled");
 }

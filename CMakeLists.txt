@@ -10,4 +10,5 @@ if(NOT DEFINED IDF_VERSION_MAJOR OR
     "Gate Controller requires ESP-IDF v5.5.4 exactly; detected ${IDF_VERSION}")
 endif()
 
+set(PROJECT_VER "0.3.2")
 project(garage_door_esp32)

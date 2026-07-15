@@ -45,6 +45,7 @@ struct RuntimeState {
 
 RuntimeState runtime;
 std::atomic_bool runtime_active{false};
+std::atomic_bool maintenance{false};
 portMUX_TYPE snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 
 void release_runtime_resources() {
@@ -282,6 +283,7 @@ RequestResult send_request(const gate::controller::Event& event) {
   if (!runtime_active.load() || runtime.queue == nullptr) {
     return RequestResult::kUnavailable;
   }
+  if (maintenance.load()) return RequestResult::kBusy;
   TaskHandle_t caller = xTaskGetCurrentTaskHandle();
   xTaskNotifyStateClear(caller);
   const RuntimeMessage message{event, caller};
@@ -305,6 +307,33 @@ RequestResult request_bench_pulse() {
 RequestResult request_target(gate::controller::Target target) {
   return send_request({gate::controller::EventType::kTargetRequested, target});
 }
+
+bool enter_maintenance() {
+  if (!runtime_active.load()) return false;
+  bool expected = false;
+  if (!maintenance.compare_exchange_strong(expected, true)) return false;
+  const Snapshot current = snapshot();
+  if (current.pulse_active ||
+      current.movement != gate::controller::MovementDirection::kNone) {
+    maintenance.store(false);
+    return false;
+  }
+  if (gate::hardware::deactivate_all() != ESP_OK) {
+    maintenance.store(false);
+    return false;
+  }
+  ESP_LOGI(kTag, "OTA maintenance mode entered; commands interlocked");
+  return true;
+}
+
+void leave_maintenance() {
+  if (maintenance.exchange(false)) {
+    gate::hardware::deactivate_all();
+    ESP_LOGI(kTag, "OTA maintenance mode left");
+  }
+}
+
+bool maintenance_active() { return maintenance.load(); }
 
 Snapshot snapshot() {
   taskENTER_CRITICAL(&snapshot_lock);

@@ -29,6 +29,12 @@ struct Snapshot {
 esp_err_t start(const gate::config::AppConfig& config);
 bool active();
 
+// OTA maintenance is admitted only while the actuator is inactive and the
+// reducer is not moving. While active, every command API rejects requests.
+bool enter_maintenance();
+void leave_maintenance();
+bool maintenance_active();
+
 // Queues a state-neutral bench pulse and waits briefly for admission by the
 // controller task. The caller never drives GPIO or mutates reducer state.
 RequestResult request_bench_pulse();

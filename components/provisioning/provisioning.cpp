@@ -14,6 +14,7 @@
 #include "config_repository.hpp"
 #include "esp_check.h"
 #include "esp_http_server.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -25,6 +26,7 @@
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
 #include "network_manager.hpp"
+#include "ota_manager.hpp"
 
 namespace gate::provisioning {
 namespace {
@@ -737,6 +739,119 @@ esp_err_t reboot_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
+esp_err_t firmware_status_handler(httpd_req_t* request) {
+  if (!authenticated(request)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  const gate::ota::Status ota = gate::ota::status();
+  const std::string response =
+      "{\"version\":\"" + json_escape(ota.version) +
+      "\",\"project\":\"" + json_escape(ota.project_name) +
+      "\",\"runningPartition\":\"" + json_escape(ota.running_partition) +
+      "\",\"updatePartition\":\"" + json_escape(ota.update_partition) +
+      "\",\"phase\":\"" + gate::ota::phase_name(ota.phase) +
+      "\",\"maximumImageSize\":" + std::to_string(ota.maximum_image_size) +
+      ",\"totalBytes\":" + std::to_string(ota.total_bytes) +
+      ",\"writtenBytes\":" + std::to_string(ota.written_bytes) +
+      ",\"pendingVerification\":" +
+      std::string(ota.pending_verification ? "true" : "false") +
+      ",\"rollbackEnabled\":" +
+      std::string(ota.rollback_enabled ? "true" : "false") +
+      ",\"maintenance\":" +
+      std::string(gate::runtime::maintenance_active() ? "true" : "false") +
+      ",\"error\":\"" + json_escape(ota.error) + "\"}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t firmware_upload_handler(httpd_req_t* request) {
+  if (!authenticated(request, true)) {
+    return send_error(request, "401 Unauthorized",
+                      "Authentication and CSRF token required.");
+  }
+  const std::size_t authorization_length =
+      httpd_req_get_hdr_value_len(request, "X-Admin-Password");
+  if (authorization_length == 0 || authorization_length > 128) {
+    return send_error(request, "403 Forbidden",
+                      "Recent administrator password authorization required.");
+  }
+  std::string authorization(authorization_length + 1, '\0');
+  if (httpd_req_get_hdr_value_str(request, "X-Admin-Password",
+                                  authorization.data(), authorization.size()) !=
+      ESP_OK) {
+    return send_error(request, "403 Forbidden", "Authorization failed.");
+  }
+  authorization.resize(authorization_length);
+  if (!gate::config::verify_admin_password(authorization,
+                                           active_config.admin)) {
+    return send_error(request, "403 Forbidden",
+                      "Administrator password is incorrect.");
+  }
+  if (request->content_len <= 0) {
+    return send_error(request, "400 Bad Request", "Firmware body is empty.");
+  }
+  char content_type[64]{};
+  if (httpd_req_get_hdr_value_str(request, "Content-Type", content_type,
+                                  sizeof(content_type)) != ESP_OK ||
+      std::strncmp(content_type, "application/octet-stream", 24) != 0) {
+    return send_error(request, "415 Unsupported Media Type",
+                      "Expected application/octet-stream.");
+  }
+
+  esp_err_t result = gate::ota::begin(request->content_len);
+  if (result != ESP_OK) {
+    return send_error(request,
+                      result == ESP_ERR_INVALID_SIZE ? "413 Payload Too Large"
+                                                    : "409 Conflict",
+                      result == ESP_ERR_INVALID_STATE
+                          ? "Gate must be stopped with no active relay pulse."
+                          : esp_err_to_name(result));
+  }
+
+  constexpr std::size_t kOtaReceiveBufferSize = 4096;
+  auto* buffer = static_cast<char*>(
+      heap_caps_malloc(kOtaReceiveBufferSize, MALLOC_CAP_8BIT));
+  if (buffer == nullptr) {
+    gate::ota::abort("Could not allocate OTA receive buffer");
+    return send_error(request, "503 Service Unavailable",
+                      "Insufficient memory for firmware upload.");
+  }
+  std::size_t remaining = request->content_len;
+  while (remaining > 0) {
+    const int received = httpd_req_recv(
+        request, buffer, std::min(remaining, kOtaReceiveBufferSize));
+    if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    if (received <= 0) {
+      heap_caps_free(buffer);
+      gate::ota::abort("Firmware upload connection was interrupted");
+      return send_error(request, "400 Bad Request", "Upload was interrupted.");
+    }
+    result = gate::ota::write(buffer, static_cast<std::size_t>(received));
+    if (result != ESP_OK) {
+      heap_caps_free(buffer);
+      gate::ota::abort("Firmware flash write failed");
+      return send_error(request, "500 Internal Server Error",
+                        "Could not write firmware.");
+    }
+    remaining -= static_cast<std::size_t>(received);
+  }
+  heap_caps_free(buffer);
+
+  result = gate::ota::finish();
+  if (result != ESP_OK) {
+    const gate::ota::Status ota = gate::ota::status();
+    return send_error(request, "422 Unprocessable Content", ota.error);
+  }
+  httpd_resp_set_type(request, "application/json");
+  const esp_err_t response_result =
+      httpd_resp_sendstr(request, "{\"accepted\":true,\"restarting\":true}");
+  if (response_result == ESP_OK) {
+    xTaskCreate(restart_task, "ota_restart", 2048, nullptr, 5, nullptr);
+  }
+  return response_result;
+}
+
 void restart_task(void*) {
   vTaskDelay(pdMS_TO_TICKS(1200));
   esp_restart();
@@ -954,9 +1069,9 @@ esp_err_t captive_handler(httpd_req_t* request) {
 esp_err_t start_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
-  // Sixteen routes are currently registered. Keep a little headroom so adding
+  // Eighteen routes are currently registered. Keep a little headroom so adding
   // the next HomeKit-management endpoint cannot silently exhaust the table.
-  config.max_uri_handlers = 20;
+  config.max_uri_handlers = 22;
   esp_err_t result = httpd_start(&server, &config);
   if (result != ESP_OK) return result;
 
@@ -994,6 +1109,12 @@ esp_err_t start_http_server() {
                            .handler = logout_handler, .user_ctx = nullptr};
   const httpd_uri_t reboot{.uri = "/api/v1/system/reboot", .method = HTTP_POST,
                            .handler = reboot_handler, .user_ctx = nullptr};
+  const httpd_uri_t firmware_status{
+      .uri = "/api/v1/system/firmware", .method = HTTP_GET,
+      .handler = firmware_status_handler, .user_ctx = nullptr};
+  const httpd_uri_t firmware_upload{
+      .uri = "/api/v1/system/firmware", .method = HTTP_POST,
+      .handler = firmware_upload_handler, .user_ctx = nullptr};
   const httpd_uri_t save{.uri = "/save", .method = HTTP_POST,
                           .handler = save_handler, .user_ctx = nullptr};
   const httpd_uri_t setup_wifi{
@@ -1016,6 +1137,8 @@ esp_err_t start_http_server() {
       (result = httpd_register_uri_handler(server, &change_wifi)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &logout)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &reboot)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &firmware_status)) != ESP_OK ||
+      (result = httpd_register_uri_handler(server, &firmware_upload)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &setup_wifi)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &save)) != ESP_OK ||
       (result = httpd_register_uri_handler(server, &captive)) != ESP_OK) {

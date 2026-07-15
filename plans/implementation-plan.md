@@ -475,6 +475,11 @@ HTTPS with a self-signed per-device certificate MAY be added, but must not block
 - If OTA does not fit safely, omit the UI control and document serial flashing. Do not ship a nonfunctional placeholder.
 - Keep configuration schema migrations forward-only and test upgrades from every released schema.
 
+The investigated OTA architecture, security boundary, rollback policy,
+implementation sequence, and acceptance tests are specified in
+`docs/ota-update.md`. Native ESP-IDF A/B web OTA is the selected product path;
+HomeSpan/ArduinoOTA is not the management transport.
+
 ## 12. Observability and failure handling
 
 Log structured, redacted events for:

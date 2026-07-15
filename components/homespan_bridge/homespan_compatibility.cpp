@@ -4,6 +4,7 @@
 
 #include "Arduino.h"
 #include "HomeSpan.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "gate_runtime.hpp"
 #include "homekit_projection.hpp"
@@ -131,7 +132,7 @@ esp_err_t start(const gate::config::AppConfig& config) {
   new Characteristic::Name(config.homekit.display_name.c_str());
   new Characteristic::Manufacturer("Garage-Door-ESP32");
   new Characteristic::Model("ESP32-WROOM-32");
-  new Characteristic::FirmwareRevision("0.2.0");
+  new Characteristic::FirmwareRevision(esp_app_get_description()->version);
   new GarageDoorService();
 
   homeSpan.autoPoll(8192, 2, 1);

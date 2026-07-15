@@ -12,6 +12,10 @@
   let homekit = $state(null);
   let operatorProfile = $state('sequential');
   let feedbackMode = $state('single');
+  let firmware = $state(null);
+  let firmwareFile = $state(null);
+  let otaUploading = $state(false);
+  let otaProgress = $state(0);
 
   async function loadDashboard() {
     try {
@@ -26,6 +30,7 @@
       const homekitResponse = await fetch('/api/v1/homekit', { cache: 'no-store' });
       if (homekitResponse.ok) homekit = await homekitResponse.json();
       authenticated = true;
+      await loadFirmware();
     } catch { authenticated = false; }
   }
 
@@ -36,6 +41,42 @@
       if (response.ok) config = { ...config, ...(await response.json()) };
       else if (response.status === 401) authenticated = false;
     } catch { /* Keep the last known state during a transient network gap. */ }
+  }
+
+  async function loadFirmware() {
+    if (!authenticated) return;
+    try {
+      const response = await fetch('/api/v1/system/firmware', { cache: 'no-store' });
+      if (response.ok) firmware = await response.json();
+    } catch { /* Reconnection after a successful update is expected. */ }
+  }
+
+  function uploadFirmware(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const file = firmwareFile;
+    const adminPassword = String(data.get('adminPassword') || '');
+    if (!file || !adminPassword) { message = 'Select firmware and enter the administrator password.'; return; }
+    if (file.size > (firmware?.maximumImageSize || 0)) { message = 'Firmware is larger than the OTA application slot.'; return; }
+    otaUploading = true; otaProgress = 0; message = 'Uploading firmware. Do not interrupt power…';
+    const request = new XMLHttpRequest();
+    request.open('POST', '/api/v1/system/firmware');
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.setRequestHeader('X-CSRF-Token', csrf);
+    request.setRequestHeader('X-Admin-Password', adminPassword);
+    request.upload.onprogress = (progress) => {
+      if (progress.lengthComputable) otaProgress = Math.round(progress.loaded * 100 / progress.total);
+    };
+    request.onload = () => {
+      otaUploading = false;
+      if (request.status >= 200 && request.status < 300) {
+        otaProgress = 100; message = 'Firmware verified. The controller is restarting…'; form.reset(); firmwareFile = null;
+      } else message = request.responseText || 'Firmware update failed.';
+      loadFirmware();
+    };
+    request.onerror = () => { otaUploading = false; message = 'Upload connection failed.'; loadFirmware(); };
+    request.send(file);
   }
 
   async function loadStatus() {
@@ -252,7 +293,7 @@
   {:else if status.provisioned}
     <section class="intro"><div><p class="eyebrow">Management dashboard</p><h2>{config?.displayName || 'Garage controller'}</h2><p>Live connectivity and redacted device configuration.</p></div><button class="secondary" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button></section>
     <nav class="tabs" aria-label="Controller settings">
-      {#each [['status','Status'],['access','Access'],['network','Network'],['gate','Gate'],['logs','Logs']] as tab}
+      {#each [['status','Status'],['access','Access'],['network','Network'],['gate','Gate'],['firmware','Firmware'],['logs','Logs']] as tab}
         <button class:active={activeTab === tab[0]} onclick={() => { activeTab = tab[0]; message = ''; }}>{tab[1]}</button>
       {/each}
     </nav>
@@ -292,6 +333,15 @@
             </div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button>
           </form>
         {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Sensor GPIO</dt><dd>{config?.sensorGpio} · {config?.sensorActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Sensor pull</dt><dd>{config?.sensorPull}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl><div class="warning">Bench test: this energizes relay GPIO {config?.relayGpio} once for {config?.pulseMs} ms.</div><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={testRelayPulse}>{pulsing ? 'Pulsing…' : 'Test relay pulse'}<span>→</span></button>{/if}
+      </section>
+    {:else if activeTab === 'firmware'}
+      <section class="card"><div class="section-title"><span>FW</span><div><h3>Firmware update</h3><p>A/B application update with automatic boot rollback.</p></div><span class="badge">{firmware?.phase || 'loading'}</span></div>
+        <dl class="settings"><div><dt>Current version</dt><dd>{firmware?.version || '—'}</dd></div><div><dt>Running partition</dt><dd>{firmware?.runningPartition || '—'}</dd></div><div><dt>Update partition</dt><dd>{firmware?.updatePartition || '—'}</dd></div><div><dt>Maximum image</dt><dd>{firmware ? `${Math.floor(firmware.maximumImageSize / 1024)} KiB` : '—'}</dd></div><div><dt>Rollback</dt><dd>{firmware?.rollbackEnabled ? 'Enabled' : 'Unavailable'}</dd></div></dl>
+        <div class="warning">The gate must be stopped with no relay pulse active. Commands are interlocked during upload. Upload only a Garage-Door-ESP32 OTA application binary—not a factory image, bootloader, partition table, or filesystem image. Do not interrupt power.</div>
+        <form onsubmit={uploadFirmware}><div class="grid"><label class="wide">OTA firmware (.bin)<input type="file" accept=".bin,application/octet-stream" required onchange={(event) => firmwareFile = event.currentTarget.files?.[0] || null} /></label><label class="wide">Administrator password<input name="adminPassword" type="password" required autocomplete="current-password" /><small>Required again to authorize this firmware operation.</small></label></div>
+          {#if otaUploading}<p class="message">Uploading and verifying… {otaProgress}%</p>{/if}
+          <button class="primary" disabled={otaUploading || !firmware?.rollbackEnabled}>{otaUploading ? `Uploading ${otaProgress}%` : 'Upload, verify & restart'}<span>→</span></button>
+        </form>
       </section>
     {:else}
       <section class="card empty-state"><div class="success-icon">≡</div><h3>Event logs</h3><p>Persistent redacted event logging is not implemented yet. Runtime diagnostics remain available through the ESP32 serial monitor.</p><span class="badge">Planned</span></section>
