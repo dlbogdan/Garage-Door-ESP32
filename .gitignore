@@ -20,6 +20,7 @@
 **/build/
 build/
 build-host/
+build-release/
 *.o
 *.a
 *.out
