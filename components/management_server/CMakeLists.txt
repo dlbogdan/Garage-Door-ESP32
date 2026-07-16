@@ -1,6 +1,7 @@
 # Remove macOS/iCloud conflict-copy artifacts before ESP-IDF scans assets.
-set(ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-include("${CMAKE_CURRENT_SOURCE_DIR}/cleanup_conflict_assets.cmake")
+set(MANAGEMENT_SERVER_DIR "${CMAKE_CURRENT_LIST_DIR}")
+set(ASSET_DIR "${MANAGEMENT_SERVER_DIR}/assets")
+include("${MANAGEMENT_SERVER_DIR}/cleanup_conflict_assets.cmake")
 
 idf_component_register(
   SRCS "management_server.cpp"
@@ -20,33 +21,33 @@ file(GLOB_RECURSE WEBUI_SOURCE_INPUTS CONFIGURE_DEPENDS
 )
 add_custom_command(
   OUTPUT
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/index.html"
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.js"
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.css"
+    "${MANAGEMENT_SERVER_DIR}/assets/index.html"
+    "${MANAGEMENT_SERVER_DIR}/assets/app.js"
+    "${MANAGEMENT_SERVER_DIR}/assets/app.css"
   COMMAND npm ci
   COMMAND npm run check
   COMMAND npm test -- --run
   COMMAND npm run build
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
           "${PROJECT_DIR}/webui/dist/index.html"
-          "${CMAKE_CURRENT_SOURCE_DIR}/assets/index.html"
+          "${MANAGEMENT_SERVER_DIR}/assets/index.html"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
           "${PROJECT_DIR}/webui/dist/app.js"
-          "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.js"
+          "${MANAGEMENT_SERVER_DIR}/assets/app.js"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
           "${PROJECT_DIR}/webui/dist/app.css"
-          "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.css"
+          "${MANAGEMENT_SERVER_DIR}/assets/app.css"
   COMMAND "${CMAKE_COMMAND}"
-          -DASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
-          -P "${CMAKE_CURRENT_SOURCE_DIR}/cleanup_conflict_assets.cmake"
+          "-DASSET_DIR=${MANAGEMENT_SERVER_DIR}/assets"
+          -P "${MANAGEMENT_SERVER_DIR}/cleanup_conflict_assets.cmake"
   DEPENDS ${WEBUI_INPUTS} ${WEBUI_SOURCE_INPUTS}
   WORKING_DIRECTORY "${PROJECT_DIR}/webui"
   COMMENT "Checking and rebuilding embedded management UI"
   VERBATIM
 )
 add_custom_target(management_ui_assets DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/assets/index.html"
-  "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.js"
-  "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.css"
+  "${MANAGEMENT_SERVER_DIR}/assets/index.html"
+  "${MANAGEMENT_SERVER_DIR}/assets/app.js"
+  "${MANAGEMENT_SERVER_DIR}/assets/app.css"
 )
 add_dependencies(${COMPONENT_LIB} management_ui_assets)
