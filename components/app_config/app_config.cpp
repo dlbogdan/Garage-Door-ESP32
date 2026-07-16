@@ -238,11 +238,10 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     }
   } else if (operator_config.decoder.profile ==
              FeedbackDecoderProfile::kCustomRules) {
-    if (operator_config.decoder.input_count == 0 ||
-        operator_config.decoder.input_count >
+    if (operator_config.decoder.input_count >
             gate::signal_decoder::DecoderLimits::kMaxInputs) {
       add_error(&errors, "operator.decoder.inputs", "count",
-                "Custom decoder requires 1-4 feedback inputs");
+                "Custom decoder supports 0-4 feedback inputs");
     } else {
       for (std::uint8_t index = 0; index < operator_config.decoder.input_count;
            ++index) {
@@ -276,6 +275,9 @@ std::vector<ValidationError> validate(const AppConfig& config) {
     if (!ids_match) {
       add_error(&errors, "operator.decoder.rules.inputIds", "mismatch",
                 "Rule input IDs must match declared decoder inputs");
+    } else if (rules.input_count == 0 && rules.rule_count == 0) {
+      // An empty decoder is the intentional erased/default commissioning state.
+      // It has no feedback semantics until the installer declares inputs/rules.
     } else {
       gate::signal_decoder::CompiledDecoder compiled;
       gate::signal_decoder::CompileError compile_error;
@@ -379,4 +381,3 @@ std::vector<ValidationError> validate(const AppConfig& config) {
 }
 
 }  // namespace gate::config
-

@@ -27,7 +27,6 @@ AppConfig valid_config() {
   config.homekit.setup_code = "48271635";
   config.homekit.setup_id = "G7T2";
   config.gate_operator.step.gpio = 25;
-  config.gate_operator.single_feedback.gpio = 27;
   config.admin.salt.assign(16, 0x12);
   config.admin.password_verifier.assign(32, 0x34);
   config.admin.pbkdf2_iterations = 60000;
@@ -63,8 +62,14 @@ void test_gpio_validation() {
   expect(has_field(gate::config::validate(config), "operator.actuators.step.gpio"),
           "input-only pin must be rejected for relay");
   config = valid_config();
-  config.gate_operator.single_feedback.gpio = config.gate_operator.step.gpio;
-  expect(has_field(gate::config::validate(config), "operator.feedback.single.gpio"),
+  auto& decoder = config.gate_operator.decoder;
+  decoder.input_count = 1;
+  decoder.inputs[0].id = 1;
+  decoder.inputs[0].label = "Collision";
+  decoder.inputs[0].electrical.gpio = config.gate_operator.step.gpio;
+  decoder.rules.input_count = 1;
+  decoder.rules.input_ids[0] = 1;
+  expect(has_field(gate::config::validate(config), "operator.decoder.inputs.gpio"),
           "relay and sensor collision must be rejected");
 }
 
@@ -74,6 +79,8 @@ void test_directional_dual_configuration() {
   config.gate_operator.open.gpio = 25;
   config.gate_operator.close.gpio = 26;
   config.gate_operator.feedback_topology = gate::config::FeedbackTopology::kDual;
+  config.gate_operator.decoder.profile =
+      gate::config::FeedbackDecoderProfile::kEndpointPreset;
   config.gate_operator.opened_feedback.gpio = 27;
   config.gate_operator.closed_feedback.gpio = 32;
   expect(gate::config::validate(config).empty(),
@@ -134,6 +141,18 @@ void test_custom_decoder_validation() {
                    "operator.decoder.inputs.gpio"),
          "custom feedback GPIO must not collide with actuator GPIO");
 }
+
+void test_empty_custom_decoder_is_valid_commissioning_state() {
+  auto config = valid_config();
+  expect(config.gate_operator.decoder.profile ==
+             gate::config::FeedbackDecoderProfile::kCustomRules,
+         "custom signal rules must be the default decoder");
+  expect(config.gate_operator.decoder.input_count == 0 &&
+             config.gate_operator.decoder.rules.rule_count == 0,
+         "erased defaults must contain zero inputs and zero rules");
+  expect(gate::config::validate(config).empty(),
+         "empty explicit commissioning decoder must validate");
+}
 }  // namespace
 
 int main() {
@@ -143,6 +162,7 @@ int main() {
   test_directional_dual_configuration();
   test_timing_and_admin_validation();
   test_custom_decoder_validation();
+  test_empty_custom_decoder_is_valid_commissioning_state();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "All application configuration tests passed\n";
   return EXIT_SUCCESS;

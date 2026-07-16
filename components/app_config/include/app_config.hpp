@@ -58,7 +58,7 @@ struct DecoderInputConfig {
 };
 
 struct FeedbackDecoderConfig {
-  FeedbackDecoderProfile profile{FeedbackDecoderProfile::kEndpointPreset};
+  FeedbackDecoderProfile profile{FeedbackDecoderProfile::kCustomRules};
   std::array<DecoderInputConfig,
              gate::signal_decoder::DecoderLimits::kMaxInputs>
       inputs{};

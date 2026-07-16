@@ -441,8 +441,8 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   const bool has_feedback_mode = form_value(body, "feedbackMode", &feedback_mode);
   const bool has_feedback_decoder =
       form_value(body, "feedbackDecoder", &feedback_decoder);
-  const bool canonical = has_operator_profile && has_feedback_mode;
-  if (has_operator_profile != has_feedback_mode) {
+  const bool canonical = has_operator_profile;
+  if (has_feedback_mode && !has_operator_profile) {
     return send_error(request, "400 Bad Request",
                       "Operator profile and feedback topology must both be provided.");
   }
@@ -483,30 +483,24 @@ esp_err_t update_config_handler(httpd_req_t* request) {
                                     : gate::config::FeedbackEndpoint::kClosed;
   } else {
     if ((operator_profile != "sequential" && operator_profile != "directional") ||
-        (feedback_mode != "single" && feedback_mode != "dual")) {
+        (has_feedback_mode && feedback_mode != "single" && feedback_mode != "dual")) {
       return send_error(request, "400 Bad Request", "Invalid operator discriminators.");
     }
     updated.gate_operator.profile = operator_profile == "directional"
         ? gate::config::OperatorProfile::kDirectional
         : gate::config::OperatorProfile::kSequential;
-    updated.gate_operator.feedback_topology = feedback_mode == "dual"
-        ? gate::config::FeedbackTopology::kDual
-        : gate::config::FeedbackTopology::kSingle;
+    if (has_feedback_mode) {
+      updated.gate_operator.feedback_topology = feedback_mode == "dual"
+          ? gate::config::FeedbackTopology::kDual
+          : gate::config::FeedbackTopology::kSingle;
+    }
 
-    if (has_feedback_decoder && feedback_decoder != "endpointPreset" &&
-        feedback_decoder != "customRules") {
+    if (has_feedback_decoder && feedback_decoder != "customRules") {
       return send_error(request, "400 Bad Request", "Invalid feedback decoder profile.");
     }
-    if (!has_feedback_decoder &&
-        updated.gate_operator.decoder.profile ==
-            gate::config::FeedbackDecoderProfile::kCustomRules) {
-      return send_error(request, "409 Conflict",
-                        "This configuration uses custom decoder rules; use the version 4 decoder form to edit it.");
-    }
-    const bool custom = has_feedback_decoder && feedback_decoder == "customRules";
+    const bool custom = true;
     updated.gate_operator.decoder.profile =
-        custom ? gate::config::FeedbackDecoderProfile::kCustomRules
-               : gate::config::FeedbackDecoderProfile::kEndpointPreset;
+        gate::config::FeedbackDecoderProfile::kCustomRules;
 
     auto parse_output = [&](const char* gpio_name, const char* level_name,
                             const char* pulse_name,
@@ -570,10 +564,10 @@ esp_err_t update_config_handler(httpd_req_t* request) {
       parsed.profile = gate::config::FeedbackDecoderProfile::kCustomRules;
       int input_count = 0;
       int rule_count = 0;
-      if (!parse_integer(body, "decoderInputCount", 1,
-                         DecoderLimits::kMaxInputs, &input_count) ||
-          !parse_integer(body, "decoderRuleCount", 1,
-                         DecoderLimits::kMaxRules, &rule_count)) {
+       if (!parse_integer(body, "decoderInputCount", 0,
+                          DecoderLimits::kMaxInputs, &input_count) ||
+           !parse_integer(body, "decoderRuleCount", 0,
+                          DecoderLimits::kMaxRules, &rule_count)) {
         return send_error(request, "400 Bad Request", "Invalid decoder counts.");
       }
       parsed.input_count = static_cast<std::uint8_t>(input_count);

@@ -1,3 +1,10 @@
+# Remove macOS conflict-copy artifacts before ESP-IDF scans component assets.
+# Only the canonical, explicitly embedded app.js/app.css files are valid.
+file(REMOVE
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/app 2.js"
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/app 2.css"
+)
+
 idf_component_register(
   SRCS "management_server.cpp"
   INCLUDE_DIRS "include"
@@ -32,6 +39,9 @@ add_custom_command(
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
           "${PROJECT_DIR}/webui/dist/app.css"
           "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.css"
+  COMMAND "${CMAKE_COMMAND}" -E rm -f
+          "${CMAKE_CURRENT_SOURCE_DIR}/assets/app 2.js"
+          "${CMAKE_CURRENT_SOURCE_DIR}/assets/app 2.css"
   DEPENDS ${WEBUI_INPUTS} ${WEBUI_SOURCE_INPUTS}
   WORKING_DIRECTORY "${PROJECT_DIR}/webui"
   COMMENT "Checking and rebuilding embedded management UI"

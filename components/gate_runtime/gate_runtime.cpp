@@ -408,7 +408,8 @@ esp_err_t start(const gate::config::AppConfig& config) {
   if (runtime.queue != nullptr) return ESP_ERR_INVALID_STATE;
   runtime.config = config;
   if (config.gate_operator.decoder.profile ==
-      gate::config::FeedbackDecoderProfile::kCustomRules) {
+          gate::config::FeedbackDecoderProfile::kCustomRules &&
+      config.gate_operator.decoder.input_count > 0) {
     gate::signal_decoder::CompileError compile_error;
     if (!gate::signal_decoder::compile(config.gate_operator.decoder.rules,
                                        &runtime.compiled_decoder,

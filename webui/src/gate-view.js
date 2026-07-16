@@ -1,5 +1,28 @@
 export const TRACE_WINDOW_MS = 30000;
 
+export function nextAssignedId(items) {
+  const used = new Set((items || []).map((item) => Number(item.id)));
+  let id = 1;
+  while (used.has(id) && id < 255) id += 1;
+  return id;
+}
+
+export function inputReferenceCount(rules, inputId) {
+  return (rules || []).reduce((count, rule) => count + (rule.groups || []).reduce(
+    (groupCount, group) => groupCount + group.filter((predicate) => Number(predicate.inputId) === Number(inputId)).length, 0
+  ), 0);
+}
+
+export function consistentLearningIntervals(intervals) {
+  if (intervals.length < 2) return null;
+  const last = intervals.slice(-2);
+  const minimum = Math.min(...last);
+  const maximum = Math.max(...last);
+  const median = Math.round((minimum + maximum) / 2);
+  const tolerance = Math.max(100, Math.round(median * 0.25));
+  return maximum - minimum <= tolerance ? { minimum, maximum, median } : null;
+}
+
 const title = (value) => value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : 'Unknown';
 
 export function operatorProfileLabel(profile) {
@@ -7,12 +30,9 @@ export function operatorProfileLabel(profile) {
 }
 
 export function feedbackDecoderLabel(config) {
-  if (config?.feedbackDecoder === 'customRules') {
-    const inputs = Number(config.decoderInputCount ?? config.decoder?.inputs?.length ?? 0);
-    const rules = Number(config.decoderRuleCount ?? config.decoder?.rules?.length ?? 0);
-    return `Custom signal rules · ${inputs} input${inputs === 1 ? '' : 's'} · ${rules} rule${rules === 1 ? '' : 's'}`;
-  }
-  return config?.feedbackMode === 'dual' ? 'Endpoint preset · dual input' : 'Endpoint preset · single input';
+  const inputs = Number(config?.decoderInputCount ?? config?.decoder?.inputs?.length ?? 0);
+  const rules = Number(config?.decoderRuleCount ?? config?.decoder?.rules?.length ?? 0);
+  return `Custom signal rules · ${inputs} input${inputs === 1 ? '' : 's'} · ${rules} rule${rules === 1 ? '' : 's'}`;
 }
 
 export function decodedStatus(config) {
@@ -54,16 +74,8 @@ export function runtimePollMode({ authenticated, hidden, activeTab, editing, ela
 }
 
 export function traceInputs(config, decoder) {
-  if (config?.feedbackDecoder === 'customRules') {
-    const labels = new Map((decoder?.inputs || []).map((input) => [Number(input.id), input.label]));
-    return (config?.decoderInputs || []).map((input) => ({ id: String(input.id), label: labels.get(Number(input.id)) || `Input ${input.id}`, level: Boolean(input.level) }));
-  }
-  if (config?.feedbackMode === 'dual') return [
-    { id: 'opened', label: 'OPENED input', level: Boolean(config?.openedAsserted) },
-    { id: 'closed', label: 'CLOSED input', level: Boolean(config?.closedAsserted) }
-  ];
-  const endpoint = config?.feedbackActiveEndpoint === 'open' ? 'OPEN' : 'CLOSED';
-  return [{ id: 'feedback', label: `${endpoint} input`, level: endpoint === 'OPEN' ? Boolean(config?.openedAsserted) : Boolean(config?.closedAsserted) }];
+  const labels = new Map((decoder?.inputs || []).map((input) => [Number(input.id), input.label]));
+  return (config?.decoderInputs || []).map((input) => ({ id: String(input.id), label: labels.get(Number(input.id)) || `Input ${input.id}`, level: Boolean(input.level) }));
 }
 
 export function appendTrace(history, inputs, now, windowMs = TRACE_WINDOW_MS) {

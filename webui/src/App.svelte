@@ -1,5 +1,5 @@
 <script>
-  import { appendTrace, commandStatus, decodedStatus, feedbackDecoderLabel, operatorProfileLabel, runtimePollMode, traceInputs, tracePath } from './gate-view.js';
+  import { appendTrace, commandStatus, consistentLearningIntervals, decodedStatus, feedbackDecoderLabel, inputReferenceCount, nextAssignedId, operatorProfileLabel, runtimePollMode, traceInputs, tracePath } from './gate-view.js';
 
   let status = $state({ loading: true, provisioned: false, connected: false, hasWifi: false, ssid: '', apSsid: '' });
   let saving = $state(false);
@@ -13,8 +13,7 @@
   let pulsing = $state(false);
   let homekit = $state(null);
   let operatorProfile = $state('sequential');
-  let feedbackMode = $state('single');
-  let feedbackDecoder = $state('endpointPreset');
+  let feedbackDecoder = $state('customRules');
   let decoder = $state({ inputs: [], rules: [], limits: { inputs: 4, rules: 8, groupsPerRule: 2, predicatesPerGroup: 3 } });
   let firmware = $state(null);
   let firmwareFile = $state(null);
@@ -22,6 +21,7 @@
   let otaProgress = $state(0);
   let learningPredicate = $state(null);
   let learningProgress = $state(0);
+  let learningTrace = $state([]);
   let traceHistory = $state([]);
   let traceNow = $state(Date.now());
   let runtimeRequestActive = false;
@@ -40,8 +40,7 @@
       config = await configResponse.json();
       displayNameDraft = config.displayName || 'Garage';
       operatorProfile = config.operatorProfile || 'sequential';
-      feedbackMode = config.feedbackMode || 'single';
-      feedbackDecoder = config.feedbackDecoder || 'endpointPreset';
+      feedbackDecoder = 'customRules';
       decoder = config.decoder || decoder;
       const homekitResponse = await fetch('/api/v1/homekit', { cache: 'no-store' });
       if (homekitResponse.ok) homekit = await homekitResponse.json();
@@ -240,9 +239,8 @@
     const body = new URLSearchParams();
     for (const [key, value] of data) body.set(key, String(value));
     body.set('operatorProfile', operatorProfile);
-    body.set('feedbackMode', feedbackMode);
-    body.set('feedbackDecoder', feedbackDecoder);
-    if (feedbackDecoder === 'customRules') serializeDecoder(body);
+    body.set('feedbackDecoder', 'customRules');
+    serializeDecoder(body);
     try {
       const response = await fetch('/api/v1/config', {
         method: 'PUT', headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' }, body
@@ -256,32 +254,28 @@
 
   function addDecoderInput() {
     if (decoder.inputs.length >= decoder.limits.inputs) return;
-    const used = new Set(decoder.inputs.map((input) => Number(input.id)));
-    let id = 1; while (used.has(id)) id += 1;
+    const id = nextAssignedId(decoder.inputs);
     decoder.inputs.push({ id, label: `Input ${id}`, gpio: 27, activeLevel: 'high', pull: 'none', debounceMs: 30 });
   }
 
   function addDecoderRule() {
     if (!decoder.inputs.length || decoder.rules.length >= decoder.limits.rules) return;
-    const used = new Set(decoder.rules.map((rule) => Number(rule.id)));
-    let id = 1; while (used.has(id)) id += 1;
+    const id = nextAssignedId(decoder.rules);
     decoder.rules.push({ id, label: `Rule ${id}`, enabled: true, outcome: 'opened', entryConfirmationMs: 0,
       lossConfirmationMs: 0, matchAgeLimitMs: 0, matchAgeExpiry: 'none',
       groups: [[{ kind: 'stableLevel', inputId: decoder.inputs[0].id, level: 1, holdMs: 2000 }]] });
   }
 
-  function loadSignalExample() {
-    decoder = {
-      ...decoder,
-      inputs: [{ id: 1, label: 'Isolated status', gpio: 27, activeLevel: 'high', pull: 'none', debounceMs: 30 }],
-      rules: [
-        { id: 1, label: 'Opened', enabled: true, outcome: 'opened', entryConfirmationMs: 0, lossConfirmationMs: 0, matchAgeLimitMs: 0, matchAgeExpiry: 'none', groups: [[{ kind: 'stableLevel', inputId: 1, level: 1, holdMs: 2500 }]] },
-        { id: 2, label: 'Closed', enabled: true, outcome: 'closed', entryConfirmationMs: 0, lossConfirmationMs: 0, matchAgeLimitMs: 0, matchAgeExpiry: 'none', groups: [[{ kind: 'stableLevel', inputId: 1, level: 0, holdMs: 2500 }]] },
-        { id: 3, label: 'Opening pulse train', enabled: true, outcome: 'opening', entryConfirmationMs: 0, lossConfirmationMs: 1500, matchAgeLimitMs: 25000, matchAgeExpiry: 'unknownAndObstructed', groups: [[{ kind: 'periodicEdges', inputId: 1, minimumIntervalMs: 800, maximumIntervalMs: 1200, minimumEdges: 3, observationWindowMs: 3500, maximumGapMs: 1500 }]] },
-        { id: 4, label: 'Closing pulse train', enabled: true, outcome: 'closing', entryConfirmationMs: 0, lossConfirmationMs: 900, matchAgeLimitMs: 25000, matchAgeExpiry: 'unknownAndObstructed', groups: [[{ kind: 'periodicEdges', inputId: 1, minimumIntervalMs: 350, maximumIntervalMs: 650, minimumEdges: 4, observationWindowMs: 3000, maximumGapMs: 900 }]] }
-      ]
-    };
+  function removeDecoderInput(input, index) {
+    const references = inputReferenceCount(decoder.rules, input.id);
+    if (references) {
+      message = `${input.label} is used by ${references} rule predicate${references === 1 ? '' : 's'}. Remove those references first.`;
+      return;
+    }
+    decoder.inputs.splice(index, 1);
   }
+
+  const rulesFor = (outcomes) => decoder.rules.map((rule, index) => ({ rule, index })).filter(({ rule }) => outcomes.includes(rule.outcome));
 
   function addGroup(rule) {
     if (rule.groups.length < decoder.limits.groupsPerRule) rule.groups.push([{ kind: 'stableLevel', inputId: decoder.inputs[0].id, level: 1, holdMs: 2000 }]);
@@ -291,20 +285,27 @@
     if (group.length < decoder.limits.predicatesPerGroup) group.push({ kind: 'stableLevel', inputId: decoder.inputs[0].id, level: 1, holdMs: 2000 });
   }
 
+  function removePredicate(rule, groupIndex, predicateIndex) {
+    const group = rule.groups[groupIndex];
+    if (group.length === 1) rule.groups.splice(groupIndex, 1);
+    else group.splice(predicateIndex, 1);
+  }
+
   const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
   async function learnPeriodic(predicate, key) {
     if (learningPredicate !== null) return;
     learningPredicate = key;
     learningProgress = 0;
-    message = 'Learning for 5 seconds… toggle the selected input at its normal rate.';
+    learningTrace = [];
+    message = 'Learning… generate three transitions at the normal signal rate (15 second timeout).';
     const intervals = [];
     let previousLevel;
     let previousEdgeTimestamp;
     let lastSampleTimestamp;
     const startedAt = Date.now();
     try {
-      while (Date.now() - startedAt < 5000) {
+      while (Date.now() - startedAt < 15000) {
         const response = await fetch('/api/v1/runtime', { cache: 'no-store' });
         if (!response.ok) throw new Error(response.status === 401 ? 'Authentication expired.' : 'Could not read live decoder input.');
         const runtime = await response.json();
@@ -325,30 +326,27 @@
             previousLevel = level;
           }
         }
-        learningProgress = Math.min(100, Math.round((Date.now() - startedAt) / 50));
-        await wait(100);
+        learningTrace = appendTrace(learningTrace, [{ id: String(predicate.inputId), level: Boolean(input.level) }], Date.now(), 15000);
+        learningProgress = Math.min(100, Math.round((Date.now() - startedAt) / 150));
+        const learned = consistentLearningIntervals(intervals);
+        if (learned) {
+          const margin = Math.max(100, Math.round(learned.median * 0.2), (learned.maximum - learned.minimum) * 2);
+          predicate.minimumIntervalMs = Math.max(1, learned.minimum - margin);
+          predicate.maximumIntervalMs = learned.maximum + margin;
+          predicate.minimumEdges = 3;
+          predicate.observationWindowMs = Math.ceil(predicate.maximumIntervalMs * 2 * 1.25);
+          predicate.maximumGapMs = Math.ceil(predicate.maximumIntervalMs * 1.5);
+          message = `Learned immediately from two consistent intervals (${learned.minimum}–${learned.maximum} ms). Review the safety margins, then save.`;
+          return;
+        }
+        await wait(250);
       }
-      if (intervals.length < 2) throw new Error(`Only ${intervals.length} edge interval(s) captured. Generate at least three transitions during the 5-second learning window.`);
-      const sorted = [...intervals].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)];
-      const minimum = sorted[0];
-      const maximum = sorted[sorted.length - 1];
-      const spread = maximum - minimum;
-      const consistencyLimit = Math.max(100, Math.round(median * 0.25));
-      if (spread > consistencyLimit) {
-        throw new Error(`Signal was inconsistent: observed ${minimum}–${maximum} ms (allowed spread ${consistencyLimit} ms). Try again with a steady signal.`);
-      }
-      const margin = Math.max(100, Math.round(median * 0.2), spread * 2);
-      predicate.minimumIntervalMs = Math.max(1, minimum - margin);
-      predicate.maximumIntervalMs = maximum + margin;
-      predicate.minimumEdges = Math.min(6, Math.max(3, intervals.length + 1));
-      predicate.observationWindowMs = Math.ceil(predicate.maximumIntervalMs * (predicate.minimumEdges - 1) * 1.25);
-      predicate.maximumGapMs = Math.ceil(predicate.maximumIntervalMs * 1.5);
-      message = `Learned ${intervals.length} intervals (${minimum}–${maximum} ms, median ${median} ms). Review the populated safety margins, then save settings.`;
+      throw new Error(`Learning timed out after 15 seconds. Captured ${intervals.length + (previousEdgeTimestamp === undefined ? 0 : 1)} transition(s); three transitions with two consistent intervals are required.`);
     } catch (error) {
       message = error instanceof Error ? error.message : 'Signal learning failed.';
     } finally {
       learningProgress = 0;
+      learningTrace = [];
       learningPredicate = null;
     }
   }
@@ -511,43 +509,37 @@
     {:else if activeTab === 'gate'}
       <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={() => { editing = !editing; message = ''; }}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
         {#if editing}
-          <div class="grid"><label>Operator profile<select bind:value={operatorProfile}><option value="sequential">One STEP input</option><option value="directional">Separate OPEN / CLOSE inputs</option></select></label><label>Feedback decoder<select bind:value={feedbackDecoder}><option value="endpointPreset">Endpoint preset</option><option value="customRules">Custom signal rules</option></select></label>{#if feedbackDecoder === 'endpointPreset'}<label>Feedback topology<select bind:value={feedbackMode}><option value="single">One endpoint input</option><option value="dual">Separate OPENED / CLOSED inputs</option></select></label>{/if}</div>
-          <div class="warning" aria-live="polite">{operatorProfile === 'sequential' ? 'Wiring: ESP32 → relay → STEP input. Opposite travel commands pause and require a later explicit command to reverse.' : 'Wiring: ESP32 → OPEN relay → OPEN input; ESP32 → CLOSE relay → CLOSE input. Opposite travel commands pulse the requested direction immediately; use only with a safely reversing operator.'} {feedbackMode === 'dual' ? 'Dual feedback: neither input is BETWEEN; both asserted is a command-interlocking contradiction.' : 'Single feedback: one configured level identifies one endpoint.'}</div>
+          <div class="profile-picker"><label>Operator profile<select bind:value={operatorProfile}><option value="sequential">Step by step</option><option value="directional">Directional · separate OPEN / CLOSE</option></select></label><p>{operatorProfile === 'sequential' ? 'One ESP output pulses the gate operator control input step by step.' : 'Separate ESP outputs pulse the gate operator OPEN and CLOSE inputs.'}</p></div>
           <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}>
             <input type="hidden" name="operatorProfile" value={operatorProfile} />
-            <input type="hidden" name="feedbackMode" value={feedbackMode} />
-            <div class="grid">
-              <input type="hidden" name="displayName" value={config?.displayName} />
+            <input type="hidden" name="displayName" value={config?.displayName} />
+            <input type="hidden" name="feedbackStabilityMs" value={config?.feedbackStabilityMs || 2000} />
+            <div class="command-settings">
               {#if operatorProfile === 'sequential'}
-                <label>STEP GPIO<input name="stepGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>STEP level<select name="stepLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>STEP pulse<input name="stepPulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /></label>
+                <fieldset class="command-group"><legend>ESP Output</legend><div class="grid"><label>GPIO<input name="stepGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>Active level<select name="stepLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="stepPulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /></label><label>Opening timeout (s)<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label><label>Closing timeout (s)<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label></div></fieldset>
               {:else}
-                <label>OPEN GPIO<input name="openGpio" type="number" min="0" max="39" value={config?.openGpio} required /></label><label>OPEN level<select name="openLevel" value={config?.openActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>OPEN pulse<input name="openPulseMs" type="number" min="100" max="2000" value={config?.openPulseMs || 500} required /></label>
-                <label>CLOSE GPIO<input name="closeGpio" type="number" min="0" max="39" value={config?.closeGpio} required /></label><label>CLOSE level<select name="closeLevel" value={config?.closeActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>CLOSE pulse<input name="closePulseMs" type="number" min="100" max="2000" value={config?.closePulseMs || 500} required /></label>
+                <fieldset class="command-group"><legend>Open ESP Output</legend><div class="grid"><label>GPIO<input name="openGpio" type="number" min="0" max="39" value={config?.openGpio} required /></label><label>Active level<select name="openLevel" value={config?.openActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="openPulseMs" type="number" min="100" max="2000" value={config?.openPulseMs || 500} required /></label><label>Opening timeout (s)<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label></div></fieldset>
+                <fieldset class="command-group"><legend>Close ESP Output</legend><div class="grid"><label>GPIO<input name="closeGpio" type="number" min="0" max="39" value={config?.closeGpio} required /></label><label>Active level<select name="closeLevel" value={config?.closeActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="closePulseMs" type="number" min="100" max="2000" value={config?.closePulseMs || 500} required /></label><label>Closing timeout (s)<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label></div></fieldset>
               {/if}
-              {#if feedbackDecoder === 'endpointPreset' && feedbackMode === 'single'}
-                <label>Feedback GPIO<input name="sensorGpio" type="number" min="0" max="39" value={config?.sensorGpio} required /></label><label>Feedback level<select name="sensorLevel" value={config?.sensorActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>Active means<select name="feedbackEndpoint" value={config?.feedbackActiveEndpoint}><option value="open">Gate open</option><option value="closed">Gate closed</option></select></label><label>Feedback pull<select name="sensorPull" value={config?.sensorPull}><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
-              {:else if feedbackDecoder === 'endpointPreset'}
-                <label>OPENED GPIO<input name="openedSensorGpio" type="number" min="0" max="39" required /></label><label>OPENED level<select name="openedSensorLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>OPENED pull<select name="openedSensorPull"><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
-                <label>CLOSED GPIO<input name="closedSensorGpio" type="number" min="0" max="39" required /></label><label>CLOSED level<select name="closedSensorLevel"><option value="low">Active low</option><option value="high">Active high</option></select></label><label>CLOSED pull<select name="closedSensorPull"><option value="up">Pull-up</option><option value="down">Pull-down</option><option value="none">None</option></select></label>
-              {/if}
-              {#if feedbackDecoder === 'endpointPreset'}<label>Endpoint stability<input name="feedbackStabilityMs" type="number" min="1000" max="10000" value={config?.feedbackStabilityMs} required /></label>{:else}<input type="hidden" name="feedbackStabilityMs" value={config?.feedbackStabilityMs || 2000} />{/if}<label>Opening timeout<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label><label>Closing timeout<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label>
-            </div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save gate settings'}<span>→</span></button>
-            {#if feedbackDecoder === 'customRules'}
-              <fieldset><legend>Declared feedback inputs</legend><p class="hint">Logical levels are sampled after electrical inversion. Use a suitable isolated input stage for non-logic outputs.</p>
-                <div class="warning">Example values are starting points only—not characterized Ducati timings. Keep the relay disconnected during signal commissioning, verify the isolated interface output is 3.3 V logic, and tune from observed diagnostics.</div><button type="button" class="secondary" onclick={loadSignalExample}>Load one-wire signal example</button>
-                {#each decoder.inputs as input, i}<div class="grid"><label>Input ID<input type="number" min="0" max="255" bind:value={input.id} required /></label><label>Label<input maxlength="32" bind:value={input.label} required /></label><label>GPIO<input type="number" min="0" max="39" bind:value={input.gpio} required /></label><label>Active level<select bind:value={input.activeLevel}><option value="high">Active high</option><option value="low">Active low</option></select></label><label>Pull<select bind:value={input.pull}><option value="none">None</option><option value="up">Pull-up</option><option value="down">Pull-down</option></select></label><label>Debounce (ms)<input type="number" min="10" max="500" bind:value={input.debounceMs} required /></label><button type="button" class="secondary" onclick={() => decoder.inputs.splice(i, 1)}>Remove input</button></div>{/each}
-                <button type="button" class="secondary" disabled={decoder.inputs.length >= decoder.limits.inputs} onclick={addDecoderInput}>Add input</button>
-              </fieldset>
-              <fieldset><legend>Rules</legend><p class="hint">Every predicate in a group must match (ALL). Any complete alternative group may match (ANY). Rules remain independent.</p>
-                {#each decoder.rules as rule, r}<article class="muted-card"><div class="grid"><label>Rule ID<input type="number" min="0" max="255" bind:value={rule.id} required /></label><label>Label<input maxlength="32" bind:value={rule.label} required /></label><label>Typed outcome<select bind:value={rule.outcome}><option value="opened">Position · OPENED</option><option value="closed">Position · CLOSED</option><option value="opening">Movement · OPENING</option><option value="closing">Movement · CLOSING</option><option value="stopped">Movement · STOPPED</option><option value="obstructed">Fault · OBSTRUCTED</option></select></label></div>
-                  {#each rule.groups as group, g}<fieldset><legend>Alternative {g + 1} · ALL predicates</legend>{#each group as predicate, p}<div class="grid"><label>Predicate type<select bind:value={predicate.kind} onchange={() => { if (predicate.kind === 'stableLevel') Object.assign(predicate, { level: 1, holdMs: 2000 }); else Object.assign(predicate, { minimumIntervalMs: 800, maximumIntervalMs: 1200, minimumEdges: 3, observationWindowMs: 3500, maximumGapMs: 1500 }); }}><option value="stableLevel">Stable level</option><option value="periodicEdges">Periodic toggling</option></select></label><label>Input<select bind:value={predicate.inputId}>{#each decoder.inputs as input}<option value={input.id}>{input.label} (ID {input.id})</option>{/each}</select></label>
-                    {#if predicate.kind === 'stableLevel'}<label>Logical level<select bind:value={predicate.level}><option value={1}>High (1)</option><option value={0}>Low (0)</option></select></label><label>Continuous hold (ms)<input type="number" min="1" bind:value={predicate.holdMs} required /></label>{:else}<label>Minimum edge interval (ms)<input type="number" min="1" bind:value={predicate.minimumIntervalMs} required /></label><label>Maximum edge interval (ms)<input type="number" min={predicate.minimumIntervalMs} bind:value={predicate.maximumIntervalMs} required /></label><label>Minimum edges<input type="number" min="2" max="16" bind:value={predicate.minimumEdges} required /></label><label>Observation window (ms)<input type="number" min={(predicate.minimumEdges - 1) * predicate.minimumIntervalMs} bind:value={predicate.observationWindowMs} required /></label><label>Maximum missing-edge gap (ms)<input type="number" min={predicate.maximumIntervalMs} bind:value={predicate.maximumGapMs} required /></label><button type="button" class="secondary" disabled={learningPredicate !== null} onclick={() => learnPeriodic(predicate, `${r}-${g}-${p}`)}>{learningPredicate === `${r}-${g}-${p}` ? `Learning… ${learningProgress}%` : 'Learn for 5 seconds'}</button>{/if}<button type="button" class="secondary" disabled={learningPredicate === `${r}-${g}-${p}`} onclick={() => group.splice(p, 1)}>Remove predicate</button></div>{/each}<button type="button" class="secondary" disabled={group.length >= decoder.limits.predicatesPerGroup || learningPredicate !== null} onclick={() => addPredicate(group)}>Add ALL predicate</button></fieldset>{/each}
-                  <button type="button" class="secondary" disabled={rule.groups.length >= decoder.limits.groupsPerRule} onclick={() => addGroup(rule)}>Add ANY alternative</button>
+            </div>
+            <section class="feedback-section"><div class="feedback-heading"><div><p class="eyebrow">Feedback</p><h4>Custom Signal Rules</h4><p>Declare electrical inputs, then map observed signals to gate state.</p></div></div>
+              <div class="feedback-workspace"><fieldset class="input-column"><legend>Inputs</legend>
+                {#if !decoder.inputs.length}<p class="empty-copy">No feedback inputs. Add one to begin explicit commissioning.</p>{/if}
+                {#each decoder.inputs as input, i}<article class="config-item"><button type="button" class="context-remove" disabled={inputReferenceCount(decoder.rules, input.id) > 0} aria-label={`Remove ${input.label}`} title={inputReferenceCount(decoder.rules, input.id) ? 'Referenced by a rule' : 'Remove input'} onclick={() => removeDecoderInput(input, i)}>×</button><div class="item-title"><strong>{input.label}</strong><span>ID {input.id}</span></div><div class="grid compact"><label>Label<input maxlength="32" bind:value={input.label} required /></label><label>GPIO<input type="number" min="0" max="39" bind:value={input.gpio} required /></label><label>Active level<select bind:value={input.activeLevel}><option value="high">High</option><option value="low">Low</option></select></label><label>Pull<select bind:value={input.pull}><option value="none">None</option><option value="up">Pull-up</option><option value="down">Pull-down</option></select></label><label>Debounce (ms)<input type="number" min="10" max="500" bind:value={input.debounceMs} required /></label></div></article>{/each}
+                <button type="button" class="context-add" aria-label="Add input" title="Add input" disabled={decoder.inputs.length >= decoder.limits.inputs} onclick={addDecoderInput}>+</button>
+              </fieldset><fieldset class="rules-column"><legend>Rules</legend>
+                {#if !decoder.rules.length}<p class="empty-copy">No rules. Feedback remains unknown until rules are configured.</p>{/if}
+                {#each [['Position',['opened','closed']],['Motion',['opening','closing','stopped']],['Fault',['obstructed']]] as category}<section class="rule-category"><h5>{category[0]}</h5>
+                {#each rulesFor(category[1]) as entry}{@const rule = entry.rule}{@const r = entry.index}<article class="config-item rule-item"><button type="button" class="context-remove" aria-label={`Remove ${rule.outcome} rule`} title="Remove rule" onclick={() => decoder.rules.splice(r, 1)}>×</button><div class="item-title"><strong>ID {rule.id}</strong></div><div class="grid compact"><label>Outcome<select bind:value={rule.outcome} onchange={() => rule.label = rule.outcome.toUpperCase()}><option value="opened">OPENED</option><option value="closed">CLOSED</option><option value="opening">OPENING</option><option value="closing">CLOSING</option><option value="stopped">STOPPED</option><option value="obstructed">OBSTRUCTED</option></select></label></div>
+                  {#each rule.groups as group, g}<fieldset class="predicate-group"><legend>Alternative {g + 1} · ALL predicates</legend><button type="button" class="context-add add-predicate" aria-label="Add predicate" title="Add ALL predicate" disabled={group.length >= decoder.limits.predicatesPerGroup || learningPredicate !== null} onclick={() => addPredicate(group)}>+</button>{#each group as predicate, p}<div class="grid predicate-card"><button type="button" class="predicate-remove" aria-label="Remove predicate" title="Remove predicate" disabled={learningPredicate === `${r}-${g}-${p}`} onclick={() => removePredicate(rule, g, p)}>×</button><label>Predicate type<select bind:value={predicate.kind} onchange={() => { if (predicate.kind === 'stableLevel') Object.assign(predicate, { level: 1, holdMs: 2000 }); else Object.assign(predicate, { minimumIntervalMs: 800, maximumIntervalMs: 1200, minimumEdges: 3, observationWindowMs: 3500, maximumGapMs: 1500 }); }}><option value="stableLevel">Stable level</option><option value="periodicEdges">Periodic toggling</option></select></label><label>Input<select bind:value={predicate.inputId}>{#each decoder.inputs as input}<option value={input.id}>{input.label} (ID {input.id})</option>{/each}</select></label>
+                    {#if predicate.kind === 'stableLevel'}<label>Logical level<select bind:value={predicate.level}><option value={1}>High (1)</option><option value={0}>Low (0)</option></select></label><label>Continuous hold (ms)<input type="number" min="1" bind:value={predicate.holdMs} required /></label>{:else}<label>Minimum interval (ms)<input type="number" min="1" bind:value={predicate.minimumIntervalMs} required /></label><label>Maximum interval (ms)<input type="number" min={predicate.minimumIntervalMs} bind:value={predicate.maximumIntervalMs} required /></label><label>Minimum edges<input type="number" min="2" max="16" bind:value={predicate.minimumEdges} required /></label><label>Observation window (ms)<input type="number" min={(predicate.minimumEdges - 1) * predicate.minimumIntervalMs} bind:value={predicate.observationWindowMs} required /></label><label>Maximum gap (ms)<input type="number" min={predicate.maximumIntervalMs} bind:value={predicate.maximumGapMs} required /></label><div class="learn-action"><button type="button" class="secondary" disabled={learningPredicate !== null} onclick={() => learnPeriodic(predicate, `${r}-${g}-${p}`)}>{learningPredicate === `${r}-${g}-${p}` ? `Learning… ${learningProgress}%` : 'Learn signal'}</button></div>{#if learningPredicate === `${r}-${g}-${p}`}<svg class="mini-scope" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Selected input learning trace"><path class="trace-grid" d="M0 50H100 M25 0V100 M50 0V100 M75 0V100"/><path class="trace-line" d={tracePath(learningTrace, String(predicate.inputId), Date.now(), 15000)}/></svg>{/if}{/if}</div>{/each}</fieldset>{/each}
+                  <button type="button" class="context-add add-alternative" aria-label="Add alternative" title="Add ANY alternative" disabled={rule.groups.length >= decoder.limits.groupsPerRule} onclick={() => addGroup(rule)}>+</button>
                   {#if ['opening','closing','stopped'].includes(rule.outcome)}<div class="grid"><label>Entry confirmation (ms)<input type="number" min="0" bind:value={rule.entryConfirmationMs} required /></label><label>Loss confirmation (ms)<input type="number" min="0" bind:value={rule.lossConfirmationMs} required /></label><label>Match-age limit (ms)<input type="number" min="0" bind:value={rule.matchAgeLimitMs} required /></label><label>After match-age limit<select bind:value={rule.matchAgeExpiry}><option value="none">No expiry</option><option value="unknown">UNKNOWN</option><option value="obstructed">OBSTRUCTED</option><option value="unknownAndObstructed">UNKNOWN + OBSTRUCTED</option></select></label></div>{/if}
-                  <button type="button" class="secondary" onclick={() => decoder.rules.splice(r, 1)}>Remove rule</button></article>{/each}
-                <button type="button" class="secondary" disabled={!decoder.inputs.length || decoder.rules.length >= decoder.limits.rules} onclick={addDecoderRule}>Add rule</button>
-              </fieldset>
-            {/if}
+                  </article>{/each}</section>{/each}
+                <button type="button" class="context-add" aria-label="Add rule" title="Add rule" disabled={!decoder.inputs.length || decoder.rules.length >= decoder.limits.rules} onclick={addDecoderRule}>+</button>
+              </fieldset></div>
+            </section>
+            <button class="primary save-gate" disabled={saving}>{saving ? 'Saving…' : 'Save Gate Settings'}<span>→</span></button>
           </form>
         {:else}
           <div class="gate-overview">
