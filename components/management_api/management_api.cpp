@@ -851,6 +851,22 @@ esp_err_t reboot_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
+esp_err_t homekit_reset_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  const esp_err_t result = gate::homekit::reset_pairings();
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Could not reset Apple Home pairings: %s",
+             esp_err_to_name(result));
+    return send_error(request, "409 Conflict",
+                      "Apple Home service is not active; restart and try again.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  return httpd_resp_sendstr(request,
+                            "{\"reset\":true,\"paired\":false}");
+}
+
 }  // namespace
 
 esp_err_t register_routes(httpd_handle_t server, Context context) {
@@ -867,6 +883,7 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
       {.uri = "/api/v1/runtime", .method = HTTP_GET, .handler = runtime_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/gate/test-pulse", .method = HTTP_POST, .handler = relay_pulse_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/homekit", .method = HTTP_GET, .handler = homekit_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/homekit/pairings", .method = HTTP_DELETE, .handler = homekit_reset_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/config", .method = HTTP_PUT, .handler = update_config_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/access/password", .method = HTTP_PUT, .handler = password_change_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/network/wifi", .method = HTTP_PUT, .handler = wifi_change_handler, .user_ctx = nullptr},

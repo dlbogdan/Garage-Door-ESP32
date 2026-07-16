@@ -14,5 +14,8 @@ esp_err_t connect_bootstrap_station(const char* ssid, const char* password);
 esp_err_t start(const gate::config::AppConfig& config);
 bool active();
 bool paired();
+// Deletes only HomeKit controller pairings. Application configuration, Wi-Fi,
+// administrator credentials, and characteristic values are preserved.
+esp_err_t reset_pairings();
 
 }  // namespace gate::homekit

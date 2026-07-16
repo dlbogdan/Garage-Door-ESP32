@@ -150,4 +150,12 @@ bool paired() {
   return status == HS_PAIRED || status == HS_CONNECTED;
 }
 
+esp_err_t reset_pairings() {
+  if (!homekit_active.load()) return ESP_ERR_INVALID_STATE;
+  ESP_LOGW(kTag, "Deleting all Apple Home controller pairings");
+  homeSpan.processSerialCommand("U");
+  homekit_paired.store(false);
+  return ESP_OK;
+}
+
 }  // namespace gate::homekit
