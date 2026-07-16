@@ -355,6 +355,35 @@ esp_err_t relay_pulse_handler(httpd_req_t* request) {
   return ESP_FAIL;
 }
 
+esp_err_t gate_target_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  const bool opening = request->user_ctx == nullptr;
+  const auto target = opening ? gate::controller::Target::kOpen
+                              : gate::controller::Target::kClosed;
+  switch (gate::runtime::request_target(target)) {
+    case gate::runtime::RequestResult::kAccepted:
+      httpd_resp_set_status(request, "202 Accepted");
+      httpd_resp_set_type(request, "application/json");
+      return httpd_resp_sendstr(request, opening
+          ? "{\"accepted\":true,\"target\":\"OPEN\"}"
+          : "{\"accepted\":true,\"target\":\"CLOSED\"}");
+    case gate::runtime::RequestResult::kBusy:
+      return send_error(request, "409 Conflict",
+                        opening
+                            ? "The open command is interlocked or the operator is busy."
+                            : "The close command is interlocked or the operator is busy.");
+    case gate::runtime::RequestResult::kHardwareError:
+      return send_error(request, "500 Internal Server Error",
+                        "The configured operator output could not be activated.");
+    case gate::runtime::RequestResult::kUnavailable:
+      return send_error(request, "503 Service Unavailable",
+                        "Gate runtime is not available.");
+  }
+  return ESP_FAIL;
+}
+
 esp_err_t homekit_handler(httpd_req_t* request) {
   if (!gate::web_auth::authorize(request)) {
     return send_error(request, "401 Unauthorized", "Authentication required.");
@@ -882,6 +911,8 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
       {.uri = "/api/v1/config", .method = HTTP_GET, .handler = config_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/runtime", .method = HTTP_GET, .handler = runtime_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/gate/test-pulse", .method = HTTP_POST, .handler = relay_pulse_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/gate/open", .method = HTTP_POST, .handler = gate_target_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/gate/close", .method = HTTP_POST, .handler = gate_target_handler, .user_ctx = reinterpret_cast<void*>(1)},
       {.uri = "/api/v1/homekit", .method = HTTP_GET, .handler = homekit_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/homekit/pairings", .method = HTTP_DELETE, .handler = homekit_reset_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/config", .method = HTTP_PUT, .handler = update_config_handler, .user_ctx = nullptr},

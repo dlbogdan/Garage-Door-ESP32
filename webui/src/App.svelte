@@ -1,4 +1,6 @@
 <script>
+  import { appendTrace, commandStatus, decodedStatus, feedbackDecoderLabel, operatorProfileLabel, runtimePollMode, traceInputs, tracePath } from './gate-view.js';
+
   let status = $state({ loading: true, provisioned: false, connected: false, hasWifi: false, ssid: '', apSsid: '' });
   let saving = $state(false);
   let message = $state('');
@@ -20,6 +22,11 @@
   let otaProgress = $state(0);
   let learningPredicate = $state(null);
   let learningProgress = $state(0);
+  let traceHistory = $state([]);
+  let traceNow = $state(Date.now());
+  let runtimeRequestActive = false;
+  let lastStatusRefresh = 0;
+  let liveInputs = $derived(traceInputs(config, decoder));
 
   async function loadDashboard() {
     try {
@@ -41,12 +48,23 @@
   }
 
   async function refreshRuntimeStatus() {
-    if (!authenticated || activeTab !== 'status') return;
+    if (runtimeRequestActive) return;
+    const now = Date.now();
+    const pollMode = runtimePollMode({ authenticated, hidden: document.hidden, activeTab, editing, elapsed: now - lastStatusRefresh });
+    if (pollMode === 'none') return;
+    runtimeRequestActive = true;
     try {
       const response = await fetch('/api/v1/runtime', { cache: 'no-store' });
-      if (response.ok) config = { ...config, ...(await response.json()) };
+      if (response.ok) {
+        config = { ...config, ...(await response.json()) };
+        if (pollMode === 'gate') {
+          traceNow = now;
+          traceHistory = appendTrace(traceHistory, traceInputs(config, decoder), now);
+        } else lastStatusRefresh = now;
+      }
       else if (response.status === 401) authenticated = false;
     } catch { /* Keep the last known state during a transient network gap. */ }
+    finally { runtimeRequestActive = false; }
   }
 
   async function loadFirmware() {
@@ -407,23 +425,25 @@
     } catch (error) { message = error instanceof Error ? error.message : 'Could not change Wi-Fi.'; saving = false; }
   }
 
-  async function testRelayPulse() {
+  async function controlGate(action) {
+    const opening = action === 'open';
+    if (!confirm(`${opening ? 'Open' : 'Close'} the gate now? Make sure the gate area is clear and can be observed safely.`)) return;
     pulsing = true;
-    message = 'Requesting relay pulse…';
+    message = `Requesting gate ${action}…`;
     try {
-      const response = await fetch('/api/v1/gate/test-pulse', {
+      const response = await fetch(`/api/v1/gate/${action}`, {
         method: 'POST', headers: { 'X-CSRF-Token': csrf }
       });
       if (!response.ok) throw new Error(await response.text());
-      message = `Relay pulse accepted (${config?.pulseMs} ms).`;
+      message = `${opening ? 'Open' : 'Close'} command accepted.`;
     } catch (error) {
-      message = error instanceof Error ? error.message : 'Could not pulse relay.';
+      message = error instanceof Error ? error.message : `Could not ${action} the gate.`;
     }
     pulsing = false;
   }
 
   loadStatus();
-  setInterval(refreshRuntimeStatus, 1000);
+  setInterval(refreshRuntimeStatus, 250);
 </script>
 
 <svelte:head><meta name="description" content="Local Garage-Door-ESP32 configuration" /></svelte:head>
@@ -501,7 +521,37 @@
               </fieldset>
             {/if}
           </form>
-        {:else}<dl class="settings"><div><dt>Relay GPIO</dt><dd>{config?.relayGpio} · {config?.relayActiveHigh ? 'active high' : 'active low'}</dd></div><div><dt>Pulse</dt><dd>{config?.pulseMs} ms</dd></div><div><dt>Feedback decoder</dt><dd>{config?.feedbackDecoder === 'customRules' ? `${config.decoderInputCount} inputs · ${config.decoderRuleCount} rules` : 'Endpoint preset'}</dd></div><div><dt>Travel</dt><dd>{config?.openingSeconds}s open / {config?.closingSeconds}s close</dd></div></dl>{#if config?.decoderActive}<section aria-labelledby="decoder-diagnostics"><h4 id="decoder-diagnostics">Live decoder diagnostics</h4><p class="hint">Refreshes every second. Edge interval is the time between transitions; estimated full cycle is twice that interval for an approximately symmetric waveform.</p><dl class="settings"><div><dt>Health</dt><dd>{config?.decoderHealth}</dd></div><div><dt>Position / movement</dt><dd>{config?.decoderPosition} / {config?.decoderMovement}</dd></div><div><dt>Rule fault</dt><dd>{config?.decoderObstructed ? 'OBSTRUCTED' : 'None'}</dd></div>{#each config?.decoderInputs || [] as input}<div><dt>Input {input.id}</dt><dd>Logical {input.level ? '1' : '0'}</dd></div>{/each}{#each config?.decoderPredicates || [] as predicate}<div><dt>Predicate {predicate.index + 1}</dt><dd>{predicate.value ? 'true' : 'false'} · edge {predicate.latestIntervalMs} ms · cycle ≈ {predicate.estimatedCycleMs} ms · {predicate.qualifyingEdgeCount} qualifying edges</dd></div>{/each}{#each config?.decoderRules || [] as rule}<div><dt>Rule {rule.id}</dt><dd>{rule.expressionValue ? 'matching' : 'not matching'} · {rule.phase} · {rule.matchAgeMs} ms</dd></div>{/each}</dl></section>{/if}<div class="warning">Bench test: this energizes relay GPIO {config?.relayGpio} once for {config?.pulseMs} ms. Feedback never actuates the gate.</div><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={testRelayPulse}>{pulsing ? 'Pulsing…' : 'Test relay pulse'}<span>→</span></button>{/if}
+        {:else}
+          <div class="gate-overview">
+            <div class="gate-summary" aria-label="Gate configuration summary">
+              <article><span class="text-mark">OP</span><div><small>Operator profile</small><strong>{operatorProfileLabel(config?.operatorProfile)}</strong></div></article>
+              <article><span class="text-mark decoder-mark">FD</span><div><small>Feedback decoder</small><strong>{feedbackDecoderLabel(config)}</strong></div></article>
+            </div>
+            <section class="live-panel" aria-labelledby="live-signal-title">
+              <div class="live-heading"><div><p class="eyebrow">Live input monitor</p><h4 id="live-signal-title">Feedback signals</h4><p>Coarse 250 ms browser view · last 30 seconds</p></div><span class="live-badge"><i></i> Live</span></div>
+              {#if liveInputs.length}
+                <div class="logic-analyzer">
+                  {#each liveInputs as input}
+                    <div class="trace-row">
+                      <div class="trace-label"><span class:high={input.level}></span><strong>{input.label}</strong><small>{input.level ? 'HIGH' : 'LOW'}</small></div>
+                      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`${input.label}: ${input.level ? 'high' : 'low'}`}>
+                        <path class="trace-grid" d="M0 25H100 M0 50H100 M0 75H100 M25 0V100 M50 0V100 M75 0V100" />
+                        <path class="trace-line" d={tracePath(traceHistory, input.id, traceNow)} />
+                      </svg>
+                    </div>
+                  {/each}
+                  <div class="trace-time"><span>−30 s</span><span>−15 s</span><span>Now</span></div>
+                </div>
+              {:else}<p class="trace-empty">No feedback inputs are currently available.</p>{/if}
+            </section>
+            <div class="runtime-summary" aria-live="polite">
+              <article class:unknown={decodedStatus(config) === 'Unknown'}><small>Decoded status</small><strong>{decodedStatus(config)}</strong><span class:alert={config?.decoderObstructed || config?.obstruction}>{config?.decoderObstructed || config?.obstruction ? '+ Obstructed' : 'No obstruction'}</span></article>
+              <article><small>Command</small><strong>{commandStatus(config)}</strong><span>{config?.pulseActive ? 'Output pulse active' : 'Controller idle'}</span></article>
+            </div>
+            {#if config?.decoderActive}<details class="decoder-details"><summary>Decoder evidence and rule diagnostics</summary><dl class="settings"><div><dt>Health</dt><dd>{config?.decoderHealth}</dd></div>{#each config?.decoderPredicates || [] as predicate}<div><dt>Predicate {predicate.index + 1}</dt><dd>{predicate.value ? 'true' : 'false'} · edge {predicate.latestIntervalMs} ms · {predicate.qualifyingEdgeCount} qualifying edges</dd></div>{/each}{#each config?.decoderRules || [] as rule}<div><dt>Rule {rule.id}</dt><dd>{rule.expressionValue ? 'matching' : 'not matching'} · {rule.phase} · {rule.matchAgeMs} ms</dd></div>{/each}</dl></details>{/if}
+            <div class="gate-action"><div><strong>Local gate control</strong><p>Fallback control when Apple Home is unavailable. Keep the gate area in view; normal operator strategy and safety interlocks apply.</p></div><div class="gate-buttons"><button class="primary close-gate" disabled={pulsing || !config?.relayControlEnabled} onclick={() => controlGate('close')}>{pulsing ? 'Sending…' : 'Close gate'}<span>↓</span></button><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={() => controlGate('open')}>{pulsing ? 'Sending…' : 'Open gate'}<span>↑</span></button></div></div>
+          </div>
+        {/if}
       </section>
     {:else if activeTab === 'firmware'}
       <section class="card"><div class="section-title"><span>FW</span><div><h3>Firmware update</h3><p>A/B application update with automatic boot rollback.</p></div><span class="badge">{firmware?.phase || 'loading'}</span></div>
