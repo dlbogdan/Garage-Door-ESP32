@@ -12,7 +12,7 @@
   "idf.openOcdConfigs": [
     "board/esp32-wrover-kit-3.3v.cfg"
   ],
-  "idf.port": "/dev/tty.wchusbserial20310",
+  "idf.port": "/dev/tty.usbmodem00001",
   "idf.flashType": "UART",
   "idf.monitorPort": "/dev/tty.wchusbserial20310"
 }
