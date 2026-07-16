@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.16)
 project(gate_controller_host_tests LANGUAGES CXX)
 
 enable_testing()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(
+  NAME http_route_capacity_test
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/../../scripts/check-http-route-capacity.py
+)
 add_executable(gate_controller_tests
   gate_controller_test.cpp
   ../../components/gate_controller/gate_controller.cpp

@@ -27,6 +27,8 @@
   let runtimeRequestActive = false;
   let lastStatusRefresh = 0;
   let liveInputs = $derived(traceInputs(config, decoder));
+  let nameEditing = $state(false);
+  let displayNameDraft = $state('');
 
   async function loadDashboard() {
     try {
@@ -36,6 +38,7 @@
       const configResponse = await fetch('/api/v1/config', { cache: 'no-store' });
       if (!configResponse.ok) return;
       config = await configResponse.json();
+      displayNameDraft = config.displayName || 'Garage';
       operatorProfile = config.operatorProfile || 'sequential';
       feedbackMode = config.feedbackMode || 'single';
       feedbackDecoder = config.feedbackDecoder || 'endpointPreset';
@@ -425,6 +428,29 @@
     } catch (error) { message = error instanceof Error ? error.message : 'Could not change Wi-Fi.'; saving = false; }
   }
 
+  async function saveDisplayName(event) {
+    event.preventDefault();
+    const nextName = displayNameDraft.trim();
+    if (!nextName || nextName.length > 64) {
+      message = 'Display name must contain 1 to 64 characters.';
+      return;
+    }
+    saving = true; message = 'Saving controller name…';
+    try {
+      const response = await fetch('/api/v1/config/name', {
+        method: 'PUT',
+        headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ displayName: nextName })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      config = { ...config, displayName: nextName };
+      displayNameDraft = nextName;
+      nameEditing = false;
+      message = 'Controller name saved.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not save controller name.'; }
+    saving = false;
+  }
+
   async function controlGate(action) {
     const opening = action === 'open';
     if (!confirm(`${opening ? 'Open' : 'Close'} the gate now? Make sure the gate area is clear and can be observed safely.`)) return;
@@ -448,10 +474,13 @@
 
 <svelte:head><meta name="description" content="Local Garage-Door-ESP32 configuration" /></svelte:head>
 
-<header class="hero">
+<header class:dashboard-hero={status.provisioned && authenticated} class="hero">
   <div class="mark">GD</div>
-  <div><p class="eyebrow">Garage-Door-ESP32</p><h1>Controller setup</h1></div>
+  {#if status.provisioned && authenticated}
+    <div class="identity"><h1>Garage-Door-ESP32</h1>{#if nameEditing}<form class="name-editor" onsubmit={saveDisplayName}><input bind:value={displayNameDraft} maxlength="64" required aria-label="Controller display name" /><button disabled={saving}>Save</button><button type="button" onclick={() => { displayNameDraft = config?.displayName || 'Garage'; nameEditing = false; }}>Cancel</button></form>{:else}<button class="editable-name" title="Edit controller name" onclick={() => nameEditing = true}>{config?.displayName || 'Garage'} <span aria-hidden="true">✎</span></button>{/if}</div>
+  {:else}<div><h1>Garage-Door-ESP32</h1><p class="hero-subtitle">Controller setup</p></div>{/if}
   <span class:online={status.connected} class="connection">{status.connected ? 'Wi-Fi online' : 'Setup mode'}</span>
+  {#if status.provisioned && authenticated}<button class="secondary header-signout" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button>{/if}
 </header>
 
 <main>
@@ -464,7 +493,6 @@
       <form class="login" onsubmit={(event) => { event.preventDefault(); login(event); }}><label>Password<input name="password" type="password" required autocomplete="current-password" /></label>{#if message}<p class="message">{message}</p>{/if}<button class="primary" disabled={saving}>{saving ? 'Signing in…' : 'Sign in'}<span>→</span></button></form>
     </section>
   {:else if status.provisioned}
-    <section class="intro"><div><p class="eyebrow">Management dashboard</p><h2>{config?.displayName || 'Garage controller'}</h2><p>Live connectivity and redacted device configuration.</p></div><button class="secondary" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button></section>
     <nav class="tabs" aria-label="Controller settings">
       {#each [['status','Status'],['access','Access'],['network','Network'],['gate','Gate'],['firmware','Firmware'],['logs','Logs']] as tab}
         <button class:active={activeTab === tab[0]} onclick={() => { activeTab = tab[0]; message = ''; }}>{tab[1]}</button>
@@ -489,7 +517,7 @@
             <input type="hidden" name="operatorProfile" value={operatorProfile} />
             <input type="hidden" name="feedbackMode" value={feedbackMode} />
             <div class="grid">
-              <label class="wide">Display name<input name="displayName" maxlength="64" value={config?.displayName} required /></label>
+              <input type="hidden" name="displayName" value={config?.displayName} />
               {#if operatorProfile === 'sequential'}
                 <label>STEP GPIO<input name="stepGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>STEP level<select name="stepLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Active low</option><option value="high">Active high</option></select></label><label>STEP pulse<input name="stepPulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /></label>
               {:else}

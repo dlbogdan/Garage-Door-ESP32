@@ -713,6 +713,45 @@ esp_err_t update_config_handler(httpd_req_t* request) {
   return ESP_OK;
 }
 
+esp_err_t display_name_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  if (request->content_len <= 0 || request->content_len > 128) {
+    return send_error(request, "400 Bad Request", "Invalid display name request.");
+  }
+  std::string body(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body.size()) {
+    const int count = httpd_req_recv(request, body.data() + received,
+                                     body.size() - received);
+    if (count <= 0) return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
+  std::string display_name;
+  if (!form_value(body, "displayName", &display_name) || display_name.empty() ||
+      display_name.size() > 64) {
+    return send_error(request, "400 Bad Request",
+                      "Display name must contain 1 to 64 characters.");
+  }
+  gate::config::AppConfig updated = config();
+  updated.homekit.display_name = display_name;
+  const auto errors = gate::config::validate(updated);
+  if (!errors.empty()) {
+    return send_error(request, "400 Bad Request",
+                      errors.front().field + ": " + errors.front().message);
+  }
+  const esp_err_t result = gate::config::ConfigRepository().save(updated);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to save display name: %s", esp_err_to_name(result));
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist display name.");
+  }
+  config() = std::move(updated);
+  httpd_resp_set_type(request, "application/json");
+  return httpd_resp_sendstr(request, "{\"saved\":true}");
+}
+
 esp_err_t password_change_handler(httpd_req_t* request) {
   if (!gate::web_auth::authorize(request, true)) {
     return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
@@ -916,6 +955,7 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
       {.uri = "/api/v1/homekit", .method = HTTP_GET, .handler = homekit_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/homekit/pairings", .method = HTTP_DELETE, .handler = homekit_reset_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/config", .method = HTTP_PUT, .handler = update_config_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/config/name", .method = HTTP_PUT, .handler = display_name_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/access/password", .method = HTTP_PUT, .handler = password_change_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/network/wifi", .method = HTTP_PUT, .handler = wifi_change_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/session/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = nullptr},

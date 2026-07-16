@@ -152,7 +152,9 @@ esp_err_t start_http_server() {
   // before the stack canary gets a chance to report an overflow.
   config.stack_size = 12288;
   config.uri_match_fn = httpd_uri_match_wildcard;
-  config.max_uri_handlers = 22;
+  // Route capacity is guarded by scripts/check-http-route-capacity.py. Keep
+  // refactoring headroom so a new API cannot disable the recovery server.
+  config.max_uri_handlers = 32;
   esp_err_t result = httpd_start(&server, &config);
   if (result != ESP_OK) return result;
 
