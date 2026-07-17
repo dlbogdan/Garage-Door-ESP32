@@ -13,24 +13,23 @@
 
 <section class="card">
   <div class="section-title"><span>GP</span><div><h3>Gate Profile</h3><p>Portable non-secret hardware, timing, feedback, and decoder configuration.</p></div></div>
-  <div class="actions"><button type="button" disabled={saving} onclick={onExportProfile}>Download profile</button><label class="button secondary">Review imported profile<input class="visually-hidden" type="file" accept=".json,application/json" disabled={saving} onchange={(event) => onImportProfile(event.currentTarget.files?.[0] || null)} /></label></div>
+  <div class="profile-actions"><button type="button" class="secondary profile-button" disabled={saving} onclick={onExportProfile}><span aria-hidden="true">↓</span> Download profile</button><label class="secondary profile-button file-button" class:disabled={saving}><span aria-hidden="true">↑</span> Review imported profile<input class="visually-hidden" type="file" accept=".json,application/json" disabled={saving} onchange={(event) => onImportProfile(event.currentTarget.files?.[0] || null)} /></label></div>
   <p class="warning">Gate Profiles contain no Wi-Fi, administrator, HomeKit identity, pairing, or trace-history secrets. Import replaces the complete Gate wiring, timing, feedback, and decoder configuration; incorrect GPIO assignments can energize unintended controller inputs.</p>
   {#if gateProfileReview}
     <section class="profile-review" aria-labelledby="profile-review-title">
-      <h4 id="profile-review-title">Validated replacement review</h4>
-      <p><strong>{gateProfileReview.target.name || 'Unnamed profile'}</strong> · {gateProfileReview.target.vendor || 'Unspecified vendor'} {gateProfileReview.target.model || 'Unspecified model'}</p>
-      {#if gateProfileReview.target.notes}<p>{gateProfileReview.target.notes}</p>{/if}
-      <div class="grid">
-        <article><small>Operator</small><strong>{gateProfileReview.current.operator.profile} → {gateProfileReview.candidate.operator.profile}</strong></article>
-        <article><small>Feedback</small><strong>{gateProfileReview.current.operator.feedback.topology} → {gateProfileReview.candidate.operator.feedback.topology}</strong></article>
-        <article><small>Decoder</small><strong>{gateProfileReview.current.operator.feedback.decoder.profile} → {gateProfileReview.candidate.operator.feedback.decoder.profile}</strong></article>
-        <article><small>Decoder size</small><strong>{gateProfileReview.current.operator.feedback.decoder.inputs.length}/{gateProfileReview.current.operator.feedback.decoder.rules.length} → {gateProfileReview.summary.decoderInputs}/{gateProfileReview.summary.decoderRules}</strong></article>
-        <article><small>Travel timing</small><strong>{gateProfileReview.current.timing.openingMs}/{gateProfileReview.current.timing.closingMs} ms → {gateProfileReview.summary.openingMs}/{gateProfileReview.summary.closingMs} ms</strong></article>
-        <article><small>Release timeout</small><strong>{gateProfileReview.current.timing.sensorReleaseTimeoutMs} ms → {gateProfileReview.summary.sensorReleaseTimeoutMs} ms</strong></article>
+      <header class="review-heading"><span class="review-check" aria-hidden="true">✓</span><div><p class="eyebrow">Validated replacement</p><h4 id="profile-review-title">Review before applying</h4><p><strong>{gateProfileReview.target.name || 'Unnamed profile'}</strong><span> · {gateProfileReview.target.vendor || 'Unspecified vendor'} {gateProfileReview.target.model || 'Unspecified model'}</span></p></div></header>
+      {#if gateProfileReview.target.notes}<p class="review-notes">{gateProfileReview.target.notes}</p>{/if}
+      <div class="profile-comparison">
+        <article><small>Operator</small><div><span>{gateProfileReview.current.operator.profile}</span><i>→</i><strong>{gateProfileReview.candidate.operator.profile}</strong></div></article>
+        <article><small>Feedback</small><div><span>{gateProfileReview.current.operator.feedback.topology}</span><i>→</i><strong>{gateProfileReview.candidate.operator.feedback.topology}</strong></div></article>
+        <article><small>Decoder</small><div><span>{gateProfileReview.current.operator.feedback.decoder.profile}</span><i>→</i><strong>{gateProfileReview.candidate.operator.feedback.decoder.profile}</strong></div></article>
+        <article><small>Inputs / rules</small><div><span>{gateProfileReview.current.operator.feedback.decoder.inputs.length} / {gateProfileReview.current.operator.feedback.decoder.rules.length}</span><i>→</i><strong>{gateProfileReview.summary.decoderInputs} / {gateProfileReview.summary.decoderRules}</strong></div></article>
+        <article><small>Open / close travel</small><div><span>{gateProfileReview.current.timing.openingMs} / {gateProfileReview.current.timing.closingMs} ms</span><i>→</i><strong>{gateProfileReview.summary.openingMs} / {gateProfileReview.summary.closingMs} ms</strong></div></article>
+        <article><small>Release timeout</small><div><span>{gateProfileReview.current.timing.sensorReleaseTimeoutMs} ms</span><i>→</i><strong>{gateProfileReview.summary.sensorReleaseTimeoutMs} ms</strong></div></article>
       </div>
-      <details><summary>Review complete normalized JSON</summary><div class="profile-json"><div><h5>Current Gate configuration</h5><pre>{JSON.stringify(gateProfileReview.current, null, 2)}</pre></div><div><h5>Imported replacement</h5><pre>{JSON.stringify(gateProfileReview.candidate, null, 2)}</pre></div></div></details>
-      <p class="digest">Reviewed digest: <code>{gateProfileReview.digest}</code></p>
-      <div class="actions"><button type="button" class="primary" disabled={saving} onclick={onApplyProfile}>Confirm complete replacement</button><button type="button" class="secondary" disabled={saving} onclick={onCancelProfile}>Cancel review</button></div>
+      <details class="profile-details"><summary>Inspect complete normalized configuration</summary><div class="profile-json"><div><h5>Current Gate configuration</h5><pre>{JSON.stringify(gateProfileReview.current, null, 2)}</pre></div><div><h5>Imported replacement</h5><pre>{JSON.stringify(gateProfileReview.candidate, null, 2)}</pre></div></div></details>
+      <div class="digest"><span>Reviewed digest</span><code>{gateProfileReview.digest}</code></div>
+      <div class="review-actions"><button type="button" class="primary" disabled={saving} onclick={onApplyProfile}>Confirm complete replacement <span>→</span></button><button type="button" class="secondary" disabled={saving} onclick={onCancelProfile}>Cancel review</button></div>
     </section>
   {/if}
 </section>
