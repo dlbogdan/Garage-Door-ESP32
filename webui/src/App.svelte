@@ -229,7 +229,10 @@
 
   async function restoreBackup(event, file, setup = false) {
     if (!file) { message = 'Select a full backup file.'; return; }
-    if (!confirm('This will replace all device state and restart the controller. Continue?')) return;
+    // Captive-portal web views can suppress modal confirm dialogs, making the
+    // submit button appear inert. Fresh-setup confirmation is an explicit
+    // required checkbox in SetupPage instead.
+    if (!setup && !confirm('This will replace all device state and restart the controller. Continue?')) return;
     saving = true; message = 'Authenticating and staging the full backup…';
     const data = new FormData(event.currentTarget);
     try {

@@ -35,8 +35,9 @@
       <label>Old administrator password<input name="password" type="password" minlength="10" maxlength="128" required autocomplete="off" /></label>
     </div>
     <p><small>The setup network will disappear after restore. The board will restart using Wi-Fi and Apple Home identity from the backup.</small></p>
+    <label><input name="confirmRestore" type="checkbox" required /> I understand this replaces all device state and restarts the controller.</label>
   </section>
   {#if message}<p class="message" role="status">{message}</p>{/if}
-  <button class="danger" disabled={saving}>{saving ? 'Validating…' : 'Restore full backup & restart'}</button>
+  <button type="submit" class="danger" disabled={saving}>{saving ? 'Validating…' : 'Restore full backup & restart'}</button>
 </form>
 {/if}
