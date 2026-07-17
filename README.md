@@ -353,6 +353,13 @@ Personal-use permission does not include redistribution, installing or building
 devices for others, paid work, hosted services, organizational use, or use in
 another project, product, service, or commercial/OEM offering.
 
+DIY users may also publicly fork, modify, and redistribute non-commercial
+source-code derivatives under the same license. Forks must provide complete
+source, preserve attribution and notices, identify their changes, remain under
+this unmodified license, and clearly state that they are unofficial. This
+permission does not cover distributing compiled firmware, programmed or
+assembled devices, paid installations, or hosted services.
+
 Product developers and other parties seeking authorization must obtain a
 separate written license from Bogdan Dumitru at
 [bogdan.dumitru@me.com](mailto:bogdan.dumitru@me.com).

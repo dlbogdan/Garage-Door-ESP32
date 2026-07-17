@@ -14,16 +14,15 @@ Bogdan Dumitru, excluding Third-Party Materials.
 
 "You" means the individual or legal entity accessing or using the Software.
 
-"Personal DIY Use" means use by a natural person, solely for that person's own
-private, non-commercial, do-it-yourself purposes, on devices owned and
-controlled by that person, without providing the Software, a derivative work,
-the resulting device, or a related service to another person or entity.
+"Non-Commercial DIY Use" means use by a natural person, solely for private,
+non-commercial, do-it-yourself purposes, including personal use and sharing
+source-code forks or derivative works with other natural persons under Section 4.
 
 "Product Use" means incorporating, adapting, linking, embedding, distributing,
 deploying, manufacturing with, selling with, licensing with, or otherwise using
 the Software or a derivative of it in any product, service, commercial offering,
 OEM offering, or project intended for another person or entity. Product Use does
-not include Personal DIY Use permitted by Section 3.
+not include Non-Commercial DIY Use permitted by Sections 3 and 4.
 
 "Third-Party Materials" means software and other materials identified as being
 owned or licensed by third parties, including dependencies, submodules, managed
@@ -42,34 +41,62 @@ evaluation. You may not publish, distribute, or share that copy.
 Subject to this License, You may, without contacting the copyright holder:
 
   a. download and copy the Software;
-  b. modify the Software for Your own Personal DIY Use;
+  b. modify the Software for Your own Non-Commercial DIY Use;
   c. compile and install the Software or Your private modifications on devices
      owned and controlled by You; and
   d. use those devices privately and without charge for Your own household or
      personal purposes.
 
-This permission is personal, non-exclusive, non-transferable, and revocable upon
-breach. It does not permit distribution of source code, object code, firmware,
-modified versions, hardware containing the Software, hosted access, installation
-for another person, or any activity performed for compensation or commercial
-advantage. A business, organization, employer, contractor, integrator, reseller,
-landlord, homeowners' association, or other legal entity does not qualify for
-Personal DIY Use. A natural person acting for any such entity does not qualify
-for Personal DIY Use.
+This permission is personal, non-exclusive, and revocable upon breach. It does
+not permit distribution except as expressly allowed by Section 4, distribution
+of object code or firmware, distribution of hardware containing the Software,
+hosted access, installation for another person, or any activity performed for
+compensation or commercial advantage. A business, organization, employer,
+contractor, integrator, reseller, landlord, homeowners' association, or other
+legal entity does not qualify for Non-Commercial DIY Use. A natural person
+acting for any such entity does not qualify for Non-Commercial DIY Use.
 
-4. NO PRODUCT OR COMMERCIAL RIGHTS
+4. NON-COMMERCIAL FORKS AND SOURCE DISTRIBUTION
 
-Except for Personal DIY Use under Section 3, You may not engage in Product Use
+You may publicly fork, modify, and redistribute the Software and source-code
+derivative works for Non-Commercial DIY Use without contacting the copyright
+holder, provided that every distribution:
+
+  a. is made without payment, fee, donation requirement, advertising revenue,
+     commercial advantage, or other compensation;
+  b. is provided in complete, human-readable source-code form through a publicly
+     accessible repository or an equivalent source archive;
+  c. includes this License in full and applies this same License, unmodified, to
+     the entire derivative work, with no additional restrictions;
+  d. preserves all copyright, attribution, license, trademark, and proprietary
+     notices from the Software;
+  e. prominently identifies You as the modifier, describes the material changes,
+     and states that the derivative is unofficial and is not endorsed, supported,
+     certified, or maintained by Bogdan Dumitru; and
+  f. does not use Bogdan Dumitru's name, project branding, or trademarks to imply
+     endorsement or to identify a different product, except for truthful
+     attribution and compatibility statements.
+
+This permission covers source code only. Distribution of compiled firmware,
+object code, pre-flashed devices, assembled products, kits containing programmed
+devices, hosted services, or installations for another person requires separate
+written authorization. Recipients receive the same permissions directly under
+this License and may create further non-commercial source forks only while
+complying with this Section.
+
+5. NO PRODUCT OR COMMERCIAL RIGHTS
+
+Except for the permissions in Sections 3 and 4, You may not engage in Product Use
 without a separate written license signed by the copyright holder. In particular,
 without prior written authorization, You may not:
 
   a. use the Software or any substantial portion of it in another project,
      product, service, firmware, device, installation, or commercial offering;
   b. copy, modify, adapt, translate, merge, link, embed, or create derivative
-     works from the Software, except as permitted by Sections 2 and 3;
+     works from the Software, except as permitted by Sections 2, 3, and 4;
   c. manufacture, have manufactured, sell, offer for sale, rent, lease,
      sublicense, host, deploy, distribute, publish, or otherwise make available
-     the Software or any derivative work;
+     the Software or any derivative work, except as permitted by Section 4;
   d. use the Software to provide paid or unpaid services to a third party;
   e. remove, obscure, or alter copyright, license, attribution, trademark, or
      proprietary notices; or
@@ -77,11 +104,13 @@ without prior written authorization, You may not:
      Software.
 
 Educational, research, nonprofit, or internal status does not create permission
-beyond Sections 2 and 3. Any permission not expressly granted is reserved.
+beyond Sections 2, 3, and 4. Any permission not expressly granted is reserved.
 
-5. SEPARATE LICENSES
+6. SEPARATE LICENSES
 
-Product Use and any other use outside Sections 2 and 3 require a separate
+written license. To request authorization, contact:
+Product Use and any other use outside Sections 2, 3, and 4 require a separate
+written license. To request authorization, contact:
 written license. To request authorization, contact:
 
 Bogdan Dumitru
@@ -91,14 +120,14 @@ Authorization is effective only when stated in a written agreement signed by
 the copyright holder. Silence, repository access, issue discussion, a pull
 request, or receipt of a copy does not constitute authorization.
 
-6. CONTRIBUTIONS
+7. CONTRIBUTIONS
 
 No contribution is accepted under this License merely because it is submitted.
 Contributions may be accepted only under separate written contribution terms or
 an express written statement by the copyright holder. Do not submit code unless
 the applicable contribution terms are clear to You.
 
-7. THIRD-PARTY MATERIALS
+8. THIRD-PARTY MATERIALS
 
 This License does not apply to Third-Party Materials. Third-Party Materials
 remain subject exclusively to their respective copyright notices and license
@@ -106,7 +135,7 @@ terms. Nothing in this License restricts rights independently granted under a
 third-party license, and nothing in a third-party license grants rights to the
 Software owned by Bogdan Dumitru.
 
-8. OWNERSHIP
+9. OWNERSHIP
 
 The Software is licensed, not sold. Bogdan Dumitru retains all right, title, and
 interest in and to the Software, including all copyright and other intellectual
@@ -114,15 +143,15 @@ property rights. No patent, trademark, trade name, service mark, design, or
 other intellectual property license is granted by implication, estoppel, or
 otherwise.
 
-9. TERMINATION
+10. TERMINATION
 
-Your permissions under Sections 2 and 3 terminate automatically and immediately
-if You breach this License. Upon termination, You must stop using the Software
-and delete all copies under Your control, except where retention is required by
-law. Sections concerning ownership, disclaimers, liability, and enforcement
-survive termination.
+Your permissions under Sections 2, 3, and 4 terminate automatically and
+immediately if You breach this License. Upon termination, You must stop using the
+Software and delete all copies under Your control, except where retention is
+required by law. Sections concerning ownership, disclaimers, liability, and
+enforcement survive termination.
 
-10. DISCLAIMER OF WARRANTY
+11. DISCLAIMER OF WARRANTY
 
 THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF ANY
 KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
@@ -130,7 +159,7 @@ PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, SAFETY, OR RELIABILITY.
 THE SOFTWARE MAY CONTROL MOVING MACHINERY AND ELECTRICAL OUTPUTS. YOU ASSUME ALL
 RISK ARISING FROM ACCESS, EVALUATION, TESTING, INSTALLATION, OR USE.
 
-11. LIMITATION OF LIABILITY
+12. LIMITATION OF LIABILITY
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, BOGDAN DUMITRU WILL NOT BE LIABLE FOR
 ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL
@@ -138,7 +167,7 @@ DAMAGES, OR FOR LOSS OF LIFE, PERSONAL INJURY, PROPERTY DAMAGE, DATA, PROFITS,
 GOODWILL, OR BUSINESS INTERRUPTION, ARISING FROM OR RELATED TO THE SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-12. ENFORCEMENT AND SEVERABILITY
+13. ENFORCEMENT AND SEVERABILITY
 
 Unauthorized use may cause irreparable harm for which monetary damages are
 inadequate, and the copyright holder may seek injunctive relief in addition to
@@ -146,7 +175,7 @@ other available remedies. If any provision is held unenforceable, it will be
 limited to the minimum extent necessary and the remaining provisions will
 continue in effect. A failure to enforce a provision is not a waiver.
 
-13. ENTIRE LICENSE
+14. ENTIRE LICENSE
 
 This License is the complete permission granted for access to the Software in
 the absence of a separate written agreement. A separate signed agreement may
