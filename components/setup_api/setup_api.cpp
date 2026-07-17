@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
+#include "backup_service.hpp"
 #include "config_repository.hpp"
 #include "esp_log.h"
 #include "network_manager.hpp"
 #include "password.hpp"
+#include "restore_staging.hpp"
 
 namespace gate::setup_api {
 namespace {
@@ -243,6 +246,53 @@ esp_err_t setup_wifi_handler(httpd_req_t* request) {
   return result;
 }
 
+esp_err_t restore_handler(httpd_req_t* request) {
+  if (*api_context.application_provisioned) {
+    return api_context.send_error(request, "403 Forbidden",
+                                  "Configuration is already saved.");
+  }
+  char password[129]{};
+  if (httpd_req_get_hdr_value_str(request, "X-Backup-Password", password,
+                                  sizeof(password)) != ESP_OK ||
+      request->content_len <= 0 ||
+      request->content_len > gate::backup::kMaximumNvsImageSize +
+                                 gate::backup::kEnvelopeHeaderSize +
+                                 gate::backup::kTagSize) {
+    std::fill(std::begin(password), std::end(password), '\0');
+    return api_context.send_error(request, "400 Bad Request",
+                                  "Invalid restore request.");
+  }
+  std::vector<std::uint8_t> envelope(request->content_len);
+  std::size_t received = 0;
+  while (received < envelope.size()) {
+    const int count = httpd_req_recv(
+        request, reinterpret_cast<char*>(envelope.data() + received),
+        envelope.size() - received);
+    if (count <= 0) {
+      std::fill(std::begin(password), std::end(password), '\0');
+      return api_context.send_error(request, "400 Bad Request",
+                                    "Invalid restore request.");
+    }
+    received += count;
+  }
+  std::vector<std::uint8_t> image;
+  esp_err_t result = gate::backup::decrypt_full_backup(envelope, password, &image);
+  std::fill(std::begin(password), std::end(password), '\0');
+  std::fill(envelope.begin(), envelope.end(), 0);
+  if (result == ESP_OK) result = gate::backup::stage_restore_image(image);
+  std::fill(image.begin(), image.end(), 0);
+  if (result != ESP_OK) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return api_context.send_error(
+        request, "400 Bad Request",
+        "Backup password, file integrity, or compatibility is invalid.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  result = httpd_resp_sendstr(request, "{\"staged\":true,\"restarting\":true}");
+  if (result == ESP_OK) api_context.schedule_restart();
+  return result;
+}
+
 }  // namespace
 
 esp_err_t register_routes(httpd_handle_t server, Context context) {
@@ -259,9 +309,12 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
                          .handler = setup_wifi_handler, .user_ctx = nullptr};
   const httpd_uri_t save{.uri = "/save", .method = HTTP_POST,
                          .handler = save_handler, .user_ctx = nullptr};
+  const httpd_uri_t restore{.uri = "/api/v1/setup/restore", .method = HTTP_POST,
+                            .handler = restore_handler, .user_ctx = nullptr};
   esp_err_t result = httpd_register_uri_handler(server, &status);
   if (result == ESP_OK) result = httpd_register_uri_handler(server, &wifi);
   if (result == ESP_OK) result = httpd_register_uri_handler(server, &save);
+  if (result == ESP_OK) result = httpd_register_uri_handler(server, &restore);
   return result;
 }
 

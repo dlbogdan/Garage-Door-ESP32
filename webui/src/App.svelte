@@ -1,5 +1,16 @@
 <script>
-  import { appendTrace, commandStatus, consistentLearningIntervals, decodedStatus, feedbackDecoderLabel, inputReferenceCount, nextAssignedId, operatorProfileLabel, runtimePollMode, traceInputs, tracePath } from './gate-view.js';
+  import { appendTrace, consistentLearningIntervals, inputReferenceCount, nextAssignedId, runtimePollMode, traceInputs } from './gate-view.js';
+  import AppHeader from './components/AppHeader.svelte';
+  import DashboardTabs from './components/DashboardTabs.svelte';
+  import LoginPage from './pages/LoginPage.svelte';
+  import SetupPage from './pages/SetupPage.svelte';
+  import StatusPage from './pages/StatusPage.svelte';
+  import AccessPage from './pages/AccessPage.svelte';
+  import NetworkPage from './pages/NetworkPage.svelte';
+  import FirmwarePage from './pages/FirmwarePage.svelte';
+  import LogsPage from './pages/LogsPage.svelte';
+  import GatePage from './pages/GatePage.svelte';
+  import BackupPage from './pages/BackupPage.svelte';
 
   let status = $state({ loading: true, provisioned: false, connected: false, hasWifi: false, ssid: '', apSsid: '' });
   let saving = $state(false);
@@ -194,6 +205,39 @@
       message = error instanceof Error ? error.message : 'Could not save Wi-Fi.';
       saving = false;
     }
+  }
+
+  async function downloadBackup(event) {
+    saving = true; message = 'Creating an encrypted full backup…';
+    const data = new FormData(event.currentTarget);
+    try {
+      const response = await fetch('/api/v1/backup', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ password: String(data.get('password') || '') })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url; anchor.download = 'garage-door-full.gdbak'; anchor.click();
+      URL.revokeObjectURL(url); event.currentTarget.reset();
+      message = 'Encrypted full backup downloaded.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Backup failed.'; }
+    saving = false;
+  }
+
+  async function restoreBackup(event, file, setup = false) {
+    if (!file) { message = 'Select a full backup file.'; return; }
+    if (!confirm('This will replace all device state and restart the controller. Continue?')) return;
+    saving = true; message = 'Authenticating and staging the full backup…';
+    const data = new FormData(event.currentTarget);
+    try {
+      const headers = { 'Content-Type': 'application/octet-stream', 'X-Backup-Password': String(data.get('password') || '') };
+      if (!setup) headers['X-CSRF-Token'] = csrf;
+      const response = await fetch(setup ? '/api/v1/setup/restore' : '/api/v1/restore', { method: 'POST', headers, body: file });
+      if (!response.ok) throw new Error(await response.text());
+      message = 'Backup validated and staged. The controller is restarting onto the restored network…';
+    } catch (error) { message = error instanceof Error ? error.message : 'Restore failed.'; saving = false; }
   }
 
   async function login(event) {
@@ -488,131 +532,59 @@
 
 <svelte:head><meta name="description" content="Local Garage-Door-ESP32 configuration" /></svelte:head>
 
-<header class:dashboard-hero={status.provisioned && authenticated} class="hero">
-  <div class="mark">GD</div>
-  {#if status.provisioned && authenticated}
-    <div class="identity"><h1>Garage-Door-ESP32</h1>{#if nameEditing}<form class="name-editor" onsubmit={saveDisplayName}><input bind:value={displayNameDraft} maxlength="64" required aria-label="Controller display name" /><button disabled={saving}>Save</button><button type="button" onclick={() => { displayNameDraft = config?.displayName || 'Garage'; nameEditing = false; }}>Cancel</button></form>{:else}<button class="editable-name" title="Edit controller name" onclick={() => nameEditing = true}>{config?.displayName || 'Garage'} <span aria-hidden="true">✎</span></button>{/if}</div>
-  {:else}<div><h1>Garage-Door-ESP32</h1><p class="hero-subtitle">Controller setup</p></div>{/if}
-  <span class:online={status.connected} class="connection">{status.connected ? 'Wi-Fi online' : 'Setup mode'}</span>
-  {#if status.provisioned && authenticated}<button class="secondary header-signout" onclick={() => mutate('/api/v1/session/logout')}>Sign out</button>{/if}
-</header>
+<AppHeader
+  {status}
+  {authenticated}
+  {config}
+  {saving}
+  bind:nameEditing
+  bind:displayNameDraft
+  onSaveDisplayName={saveDisplayName}
+  onSignOut={() => mutate('/api/v1/session/logout')}
+/>
 
 <main>
   {#if status.loading}
     <section class="card center"><div class="spinner"></div><p>Reading device status…</p></section>
   {:else if status.provisioned && !authenticated}
-    <section class="card success">
-      <div class="success-icon">⌁</div><p class="eyebrow">Administrator access</p><h2>Sign in to manage</h2>
-      <p>Your configuration is protected by the administrator password created during setup.</p>
-      <form class="login" onsubmit={(event) => { event.preventDefault(); login(event); }}><label>Password<input name="password" type="password" required autocomplete="current-password" /></label>{#if message}<p class="message">{message}</p>{/if}<button class="primary" disabled={saving}>{saving ? 'Signing in…' : 'Sign in'}<span>→</span></button></form>
-    </section>
+    <LoginPage {message} {saving} onLogin={login} />
   {:else if status.provisioned}
-    <nav class="tabs" aria-label="Controller settings">
-      {#each [['status','Status'],['access','Access'],['network','Network'],['gate','Gate'],['firmware','Firmware'],['logs','Logs']] as tab}
-        <button class:active={activeTab === tab[0]} onclick={() => { activeTab = tab[0]; message = ''; }}>{tab[1]}</button>
-      {/each}
-    </nav>
+    <DashboardTabs {activeTab} onSelect={(tab) => { activeTab = tab; message = ''; }} />
 
     {#if activeTab === 'status'}
-      <section class="stats"><article><span class:good={status.connected}></span><p>Network</p><strong>{status.connected ? 'Online' : 'Offline'}</strong><small>{config?.ssid}</small></article><article><span class:good={config?.feedbackActive}></span><p>Gate feedback</p><strong>{config?.feedbackActive ? 'Active' : 'Inactive'}</strong><small>{config?.hardwareMonitoring ? 'Endpoint stability filter active' : 'Monitor unavailable'}</small></article><article><p>Setup access</p><strong>{status.apSsid}</strong><small>Fallback AP active</small></article></section>
-      <section class="card"><div class="section-title"><span>ST</span><div><h3>System status</h3><p>Current firmware milestone and safety posture.</p></div></div><dl class="settings"><div><dt>Configuration</dt><dd>Valid and protected</dd></div><div><dt>Relay output</dt><dd>{config?.relayControlEnabled ? 'Enabled' : 'Inactive · commands disabled'}</dd></div><div><dt>Sensor monitor</dt><dd>{config?.hardwareMonitoring ? 'Running' : 'Unavailable'}</dd></div><div><dt>Fallback recovery</dt><dd>Always available</dd></div></dl></section>
+      <StatusPage {status} {config} />
     {:else if activeTab === 'access'}
-      <section class="card"><div class="section-title"><span>PW</span><div><h3>Administrator password</h3><p>Changing it signs out every active browser session.</p></div></div><form onsubmit={(event) => { event.preventDefault(); changePassword(event); }}><div class="grid"><label class="wide">Current password<input name="currentPassword" type="password" required autocomplete="current-password" /></label><label>New password<input name="newPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label><label>Confirm new password<input name="confirmation" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /></label></div><button class="primary" disabled={saving}>{saving ? 'Changing…' : 'Change password'}<span>→</span></button></form></section>
-      <section class="card"><div class="section-title"><span>HK</span><div><h3>Apple Home access</h3><p>{homekit?.paired ? 'Paired with Apple Home.' : 'Ready to pair as a Garage Door Opener.'}</p></div><span class="badge">{homekit?.paired ? 'Paired' : homekit?.active ? 'Ready' : 'Starting'}</span></div><dl class="settings"><div><dt>Pairing code</dt><dd>{homekit?.setupCode || 'Loading…'}</dd></div><div><dt>Setup ID</dt><dd>{homekit?.setupId || '—'}</dd></div></dl><p class="hint">On iPhone or iPad, open Home → Add Accessory → More Options. Select {config?.displayName}, then choose “Enter code” and use the pairing code above.</p><div class="warning">Resetting Apple Home deletes only controller pairing records. Wi-Fi, administrator access, gate settings, and decoder rules are preserved. Use this after removing the accessory from Apple Home when it cannot be paired again.</div><button type="button" class="secondary" disabled={saving || !homekit?.active} onclick={resetHomeKitPairings}>Reset Apple Home pairings</button></section>
+      <AccessPage {homekit} {config} {saving} onChangePassword={changePassword} onResetHomeKitPairings={resetHomeKitPairings} />
     {:else if activeTab === 'network'}
-      <section class="card"><div class="section-title"><span>WF</span><div><h3>Wi-Fi network</h3><p>Current network: <strong>{config?.ssid}</strong></p></div></div><form onsubmit={(event) => { event.preventDefault(); saveWifiNetwork(event); }}><div class="grid"><label>New Wi-Fi name<input name="ssid" maxlength="32" required autocomplete="off" /></label><label>New Wi-Fi password<input name="wifiPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password" /><small>Leave empty only for an open network.</small></label><label class="wide">Administrator password<input name="adminPassword" type="password" required autocomplete="current-password" /><small>Required to authorize a network migration.</small></label></div><div class="warning">The controller restarts after saving. If the new network cannot be reached, connect to <strong>{status.apSsid}</strong> and open 192.168.4.1.</div><button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save network & restart'}<span>→</span></button></form></section>
-      <section class="card muted-card"><div class="section-title"><span>IP</span><div><h3>IP configuration</h3><p>DHCP is currently automatic. Static IP, DNS, and hostname controls require a future schema migration.</p></div><span class="badge">DHCP</span></div></section>
+      <NetworkPage {status} {config} {saving} onSave={saveWifiNetwork} />
     {:else if activeTab === 'gate'}
-      <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={() => { editing = !editing; message = ''; }}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
-        {#if editing}
-          <div class="profile-picker"><label>Operator profile<select bind:value={operatorProfile}><option value="sequential">Step by step</option><option value="directional">Directional · separate OPEN / CLOSE</option></select></label><p>{operatorProfile === 'sequential' ? 'One ESP output pulses the gate operator control input step by step.' : 'Separate ESP outputs pulse the gate operator OPEN and CLOSE inputs.'}</p></div>
-          <form onsubmit={(event) => { event.preventDefault(); saveSettings(event); }}>
-            <input type="hidden" name="operatorProfile" value={operatorProfile} />
-            <input type="hidden" name="displayName" value={config?.displayName} />
-            <input type="hidden" name="feedbackStabilityMs" value={config?.feedbackStabilityMs || 2000} />
-            <div class="command-settings">
-              {#if operatorProfile === 'sequential'}
-                <fieldset class="command-group"><legend>ESP Output</legend><div class="grid"><label>GPIO<input name="stepGpio" type="number" min="0" max="39" value={config?.relayGpio} required /></label><label>Active level<select name="stepLevel" value={config?.relayActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="stepPulseMs" type="number" min="100" max="2000" value={config?.pulseMs} required /></label><label>Opening timeout (s)<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label><label>Closing timeout (s)<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label></div></fieldset>
-              {:else}
-                <fieldset class="command-group"><legend>Open ESP Output</legend><div class="grid"><label>GPIO<input name="openGpio" type="number" min="0" max="39" value={config?.openGpio} required /></label><label>Active level<select name="openLevel" value={config?.openActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="openPulseMs" type="number" min="100" max="2000" value={config?.openPulseMs || 500} required /></label><label>Opening timeout (s)<input name="openingSeconds" type="number" min="3" max="180" value={config?.openingSeconds} required /></label></div></fieldset>
-                <fieldset class="command-group"><legend>Close ESP Output</legend><div class="grid"><label>GPIO<input name="closeGpio" type="number" min="0" max="39" value={config?.closeGpio} required /></label><label>Active level<select name="closeLevel" value={config?.closeActiveHigh ? 'high' : 'low'}><option value="low">Low</option><option value="high">High</option></select></label><label>Pulse (ms)<input name="closePulseMs" type="number" min="100" max="2000" value={config?.closePulseMs || 500} required /></label><label>Closing timeout (s)<input name="closingSeconds" type="number" min="3" max="180" value={config?.closingSeconds} required /></label></div></fieldset>
-              {/if}
-            </div>
-            <section class="feedback-section"><div class="feedback-heading"><div><p class="eyebrow">Feedback</p><h4>Custom Signal Rules</h4><p>Declare electrical inputs, then map observed signals to gate state.</p></div></div>
-              <div class="feedback-workspace"><fieldset class="input-column"><legend>Inputs</legend>
-                {#if !decoder.inputs.length}<p class="empty-copy">No feedback inputs. Add one to begin explicit commissioning.</p>{/if}
-                {#each decoder.inputs as input, i}<article class="config-item"><button type="button" class="context-remove" disabled={inputReferenceCount(decoder.rules, input.id) > 0} aria-label={`Remove ${input.label}`} title={inputReferenceCount(decoder.rules, input.id) ? 'Referenced by a rule' : 'Remove input'} onclick={() => removeDecoderInput(input, i)}>×</button><div class="item-title"><strong>{input.label}</strong><span>ID {input.id}</span></div><div class="grid compact"><label>Label<input maxlength="32" bind:value={input.label} required /></label><label>GPIO<input type="number" min="0" max="39" bind:value={input.gpio} required /></label><label>Active level<select bind:value={input.activeLevel}><option value="high">High</option><option value="low">Low</option></select></label><label>Pull<select bind:value={input.pull}><option value="none">None</option><option value="up">Pull-up</option><option value="down">Pull-down</option></select></label><label>Debounce (ms)<input type="number" min="10" max="500" bind:value={input.debounceMs} required /></label></div></article>{/each}
-                <button type="button" class="context-add" aria-label="Add input" title="Add input" disabled={decoder.inputs.length >= decoder.limits.inputs} onclick={addDecoderInput}>+</button>
-              </fieldset><section class="patterns-column" aria-labelledby="signal-patterns-title"><div class="patterns-heading"><div><h5 id="signal-patterns-title">Signal Patterns</h5><p>When an electrical pattern is observed, interpret it as a gate state.</p></div></div>
-                {#if !decoder.rules.length}<p class="empty-copy pattern-empty">No signal patterns configured. Gate feedback remains unknown.</p>{/if}
-                {#each [['Position',['opened','closed']],['Motion',['opening','closing','stopped']],['Faults',['obstructed']]] as category}<section class="pattern-category"><h5>{category[0]}</h5>
-                  {#each rulesFor(category[1]) as entry}{@const rule = entry.rule}{@const r = entry.index}
-                    <article class="pattern-item" class:editing-pattern={editingPatternIndex === r}>
-                      <div class="pattern-summary"><div class="pattern-description">{#each rule.groups as group, g}<strong>{groupSummary(group)}</strong>{#if g < rule.groups.length - 1}<span class="summary-or">OR</span>{/if}{/each}<small>{[...new Set(rule.groups.flat().map((predicate) => inputName(predicate.inputId)))].join(', ')}</small></div><strong class="pattern-outcome">{rule.outcome.toUpperCase()}</strong><button type="button" class="secondary pattern-edit" onclick={() => editingPatternIndex = editingPatternIndex === r ? null : r}>{editingPatternIndex === r ? 'Close' : 'Edit'}</button></div>
-                      {#if editingPatternIndex === r}<div class="pattern-editor"><div class="pattern-editor-heading"><div><p class="eyebrow">Interpret as</p><select aria-label="Interpreted gate state" bind:value={rule.outcome} onchange={() => rule.label = rule.outcome.toUpperCase()}><option value="opened">OPENED</option><option value="closed">CLOSED</option><option value="opening">OPENING</option><option value="closing">CLOSING</option><option value="stopped">STOPPED</option><option value="obstructed">OBSTRUCTED</option></select></div><button type="button" class="delete-pattern" onclick={() => removePattern(r)}>Delete pattern</button></div>
-                        <section class="signal-editor"><h6>Signal pattern</h6>{#each rule.groups as group, g}{#if g > 0}<div class="or-divider"><span>OR</span></div>{/if}<div class="signal-option">{#each group as predicate, p}{#if p > 0}<div class="and-divider"><span>AND</span></div>{/if}<div class="signal-condition"><button type="button" class="predicate-remove" aria-label="Remove condition" title="Remove condition" disabled={learningPredicate === `${r}-${g}-${p}`} onclick={() => removePredicate(rule, g, p)}>×</button><div class="grid"><label>Signal type<select bind:value={predicate.kind} onchange={() => { if (predicate.kind === 'stableLevel') Object.assign(predicate, { level: 1, holdMs: 2000 }); else Object.assign(predicate, { minimumIntervalMs: 800, maximumIntervalMs: 1200, minimumEdges: 3, observationWindowMs: 3500, maximumGapMs: 1500 }); }}><option value="stableLevel">Stable level</option><option value="periodicEdges">Periodic toggling</option></select></label><label>Input<select bind:value={predicate.inputId}>{#each decoder.inputs as input}<option value={input.id}>{input.label}</option>{/each}</select></label>
-                            {#if predicate.kind === 'stableLevel'}<label>Logical level<select bind:value={predicate.level}><option value={1}>HIGH</option><option value={0}>LOW</option></select></label><label>Continuous hold (ms)<input type="number" min="1" bind:value={predicate.holdMs} required /></label>{:else}<label>Minimum interval (ms)<input type="number" min="1" bind:value={predicate.minimumIntervalMs} required /></label><label>Maximum interval (ms)<input type="number" min={predicate.minimumIntervalMs} bind:value={predicate.maximumIntervalMs} required /></label><label>Minimum edges<input type="number" min="2" max="16" bind:value={predicate.minimumEdges} required /></label><label>Observation window (ms)<input type="number" min={(predicate.minimumEdges - 1) * predicate.minimumIntervalMs} bind:value={predicate.observationWindowMs} required /></label><label>Maximum gap (ms)<input type="number" min={predicate.maximumIntervalMs} bind:value={predicate.maximumGapMs} required /></label><div class="learn-action"><button type="button" class="secondary" disabled={learningPredicate !== null} onclick={() => learnPeriodic(predicate, `${r}-${g}-${p}`)}>{learningPredicate === `${r}-${g}-${p}` ? `Learning… ${learningProgress}%` : 'Learn signal'}</button></div>{#if learningPredicate === `${r}-${g}-${p}`}<svg class="mini-scope" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Selected input learning trace"><path class="trace-grid" d="M0 50H100 M25 0V100 M50 0V100 M75 0V100"/><path class="trace-line" d={tracePath(learningTrace, String(predicate.inputId), Date.now(), 15000)}/></svg>{/if}{/if}</div></div>{/each}<button type="button" class="text-add" disabled={group.length >= decoder.limits.predicatesPerGroup || learningPredicate !== null} onclick={() => addPredicate(group)}>+ Add AND condition</button></div>{/each}<button type="button" class="text-add add-or" disabled={rule.groups.length >= decoder.limits.groupsPerRule} onclick={() => addGroup(rule)}>+ Add OR pattern</button></section>
-                        <section class="behaviour-editor"><h6>Rule behaviour</h6><div class="grid"><label>Entry confirmation (ms)<input type="number" min="0" bind:value={rule.entryConfirmationMs} required /></label><label>Loss confirmation (ms)<input type="number" min="0" bind:value={rule.lossConfirmationMs} required /></label><label>Match-age limit (ms)<input type="number" min="0" bind:value={rule.matchAgeLimitMs} required /></label><label>After match-age limit<select bind:value={rule.matchAgeExpiry}><option value="none">No expiry</option><option value="unknown">UNKNOWN</option><option value="obstructed">OBSTRUCTED</option><option value="unknownAndObstructed">UNKNOWN + OBSTRUCTED</option></select></label></div></section>
-                        <button type="button" class="secondary close-pattern" onclick={() => editingPatternIndex = null}>Done</button></div>{/if}
-                    </article>
-                  {/each}</section>{/each}
-                <button type="button" class="secondary add-pattern" disabled={!decoder.inputs.length || decoder.rules.length >= decoder.limits.rules} onclick={addDecoderRule}>+ Add Signal Pattern</button>
-              </section></div>
-            </section>
-            <button class="primary save-gate" disabled={saving}>{saving ? 'Saving…' : 'Save Gate Settings'}<span>→</span></button>
-          </form>
-        {:else}
-          <div class="gate-overview">
-            <div class="gate-summary" aria-label="Gate configuration summary">
-              <article><span class="text-mark">OP</span><div><small>Operator profile</small><strong>{operatorProfileLabel(config?.operatorProfile)}</strong></div></article>
-              <article><span class="text-mark decoder-mark">FD</span><div><small>Feedback decoder</small><strong>{feedbackDecoderLabel(config)}</strong></div></article>
-            </div>
-            <section class="live-panel" aria-labelledby="live-signal-title">
-              <div class="live-heading"><div><p class="eyebrow">Live input monitor</p><h4 id="live-signal-title">Feedback signals</h4><p>Coarse 250 ms browser view · last 30 seconds</p></div><span class="live-badge"><i></i> Live</span></div>
-              {#if liveInputs.length}
-                <div class="logic-analyzer">
-                  {#each liveInputs as input}
-                    <div class="trace-row">
-                      <div class="trace-label"><span class:high={input.level}></span><strong>{input.label}</strong><small>{input.level ? 'HIGH' : 'LOW'}</small></div>
-                      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`${input.label}: ${input.level ? 'high' : 'low'}`}>
-                        <path class="trace-grid" d="M0 25H100 M0 50H100 M0 75H100 M25 0V100 M50 0V100 M75 0V100" />
-                        <path class="trace-line" d={tracePath(traceHistory, input.id, traceNow)} />
-                      </svg>
-                    </div>
-                  {/each}
-                  <div class="trace-time"><span>−30 s</span><span>−15 s</span><span>Now</span></div>
-                </div>
-              {:else}<p class="trace-empty">No feedback inputs are currently available.</p>{/if}
-            </section>
-            <div class="runtime-summary" aria-live="polite">
-              <article class:unknown={decodedStatus(config) === 'Unknown'}><small>Decoded status</small><strong>{decodedStatus(config)}</strong><span class:alert={config?.decoderObstructed || config?.obstruction}>{config?.decoderObstructed || config?.obstruction ? '+ Obstructed' : 'No obstruction'}</span></article>
-              <article><small>Command</small><strong>{commandStatus(config)}</strong><span>{config?.pulseActive ? 'Output pulse active' : 'Controller idle'}</span></article>
-            </div>
-            {#if config?.decoderActive}<details class="decoder-details"><summary>Decoder evidence and rule diagnostics</summary><dl class="settings"><div><dt>Health</dt><dd>{config?.decoderHealth}</dd></div>{#each config?.decoderPredicates || [] as predicate}<div><dt>Predicate {predicate.index + 1}</dt><dd>{predicate.value ? 'true' : 'false'} · edge {predicate.latestIntervalMs} ms · {predicate.qualifyingEdgeCount} qualifying edges</dd></div>{/each}{#each config?.decoderRules || [] as rule}<div><dt>Rule {rule.id}</dt><dd>{rule.expressionValue ? 'matching' : 'not matching'} · {rule.phase} · {rule.matchAgeMs} ms</dd></div>{/each}</dl></details>{/if}
-            <div class="gate-action"><div><strong>Local gate control</strong><p>Fallback control when Apple Home is unavailable. Keep the gate area in view; normal operator strategy and safety interlocks apply.</p></div><div class="gate-buttons"><button class="primary close-gate" disabled={pulsing || !config?.relayControlEnabled} onclick={() => controlGate('close')}>{pulsing ? 'Sending…' : 'Close gate'}<span>↓</span></button><button class="primary" disabled={pulsing || !config?.relayControlEnabled} onclick={() => controlGate('open')}>{pulsing ? 'Sending…' : 'Open gate'}<span>↑</span></button></div></div>
-          </div>
-        {/if}
-      </section>
+      <GatePage
+        {config} {saving} {decoder} {pulsing} {liveInputs} {traceHistory} {traceNow}
+        {learningPredicate} {learningProgress} {learningTrace}
+        bind:editing bind:operatorProfile bind:editingPatternIndex
+        onToggleEditing={() => { editing = !editing; message = ''; }}
+        onSaveSettings={saveSettings}
+        onAddDecoderInput={addDecoderInput}
+        onRemoveDecoderInput={removeDecoderInput}
+        onAddDecoderRule={addDecoderRule}
+        {rulesFor} {groupSummary} {inputName}
+        onRemovePattern={removePattern}
+        onAddGroup={addGroup}
+        onAddPredicate={addPredicate}
+        onRemovePredicate={removePredicate}
+        onLearnPeriodic={learnPeriodic}
+        onControlGate={controlGate}
+      />
+    {:else if activeTab === 'backup'}
+      <BackupPage {saving} onBackup={downloadBackup} onRestore={(event, file) => restoreBackup(event, file, false)} />
     {:else if activeTab === 'firmware'}
-      <section class="card"><div class="section-title"><span>FW</span><div><h3>Firmware update</h3><p>A/B application update with automatic boot rollback.</p></div><span class="badge">{firmware?.phase || 'loading'}</span></div>
-        <dl class="settings"><div><dt>Current version</dt><dd>{firmware?.version || '—'}</dd></div><div><dt>Running partition</dt><dd>{firmware?.runningPartition || '—'}</dd></div><div><dt>Update partition</dt><dd>{firmware?.updatePartition || '—'}</dd></div><div><dt>Maximum image</dt><dd>{firmware ? `${Math.floor(firmware.maximumImageSize / 1024)} KiB` : '—'}</dd></div><div><dt>Rollback</dt><dd>{firmware?.rollbackEnabled ? 'Enabled' : 'Unavailable'}</dd></div></dl>
-        <div class="warning">The gate must be stopped with no relay pulse active. Commands are interlocked during upload. Upload only a Garage-Door-ESP32 OTA application binary—not a factory image, bootloader, partition table, or filesystem image. Do not interrupt power.</div>
-        <form onsubmit={uploadFirmware}><div class="grid"><label class="wide">OTA firmware (.bin)<input type="file" accept=".bin,application/octet-stream" required onchange={(event) => firmwareFile = event.currentTarget.files?.[0] || null} /></label><label class="wide">Administrator password<input name="adminPassword" type="password" required autocomplete="current-password" /><small>Required again to authorize this firmware operation.</small></label></div>
-          {#if otaUploading}<p class="message">Uploading and verifying… {otaProgress}%</p>{/if}
-          <button class="primary" disabled={otaUploading || !firmware?.rollbackEnabled}>{otaUploading ? `Uploading ${otaProgress}%` : 'Upload, verify & restart'}<span>→</span></button>
-        </form>
-      </section>
+      <FirmwarePage {firmware} bind:firmwareFile {otaUploading} {otaProgress} onUpload={uploadFirmware} onSelectFile={(file) => firmwareFile = file} />
     {:else}
-      <section class="card empty-state"><div class="success-icon">≡</div><h3>Event logs</h3><p>Persistent redacted event logging is not implemented yet. Runtime diagnostics remain available through the ESP32 serial monitor.</p><span class="badge">Planned</span></section>
+      <LogsPage />
     {/if}
     {#if message}<p class="message">{message}</p>{/if}<button class="danger" onclick={() => mutate('/api/v1/system/reboot')}>Restart controller</button>
   {:else if !status.provisioned}
-    <form onsubmit={(event) => { event.preventDefault(); saveInitialWifi(event); }}>
-      <section class="intro"><div><p class="eyebrow">First-time setup</p><h2>Connect and secure</h2><p>Enter only Wi-Fi and the administrator password. Gate hardware and Apple Home settings use safe defaults and can be changed in the main app.</p></div><div class="step">1 <span>of</span> 1</div></section>
-      <section class="card"><div class="section-title"><span>01</span><div><h3>Wi-Fi and administrator</h3><p>Connect the controller and protect its management page.</p></div></div><div class="grid"><label>Wi-Fi name<input name="ssid" maxlength="32" value={status.ssid} required autocomplete="off" /></label><label>Wi-Fi password<input name="password" type="password" minlength="8" maxlength="63" autocomplete="new-password" /><small>Leave empty only for an open network.</small></label><label class="wide">Administrator password<input name="adminPassword" type="password" minlength="10" maxlength="128" required autocomplete="new-password" /><small>At least 10 characters.</small></label></div></section>
-      {#if message}<p class="message" role="status">{message}</p>{/if}
-      <button class="primary" disabled={saving}>{saving ? 'Saving…' : 'Save setup & restart'}<span>→</span></button>
-    </form>
+    <SetupPage {status} {message} {saving} onSave={saveInitialWifi} onRestore={(event, file) => restoreBackup(event, file, true)} />
   {/if}
 </main>
 

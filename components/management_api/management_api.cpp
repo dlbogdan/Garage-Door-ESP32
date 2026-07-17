@@ -1,19 +1,24 @@
 #include "management_api.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "backup_service.hpp"
 #include "config_repository.hpp"
 #include "esp_log.h"
+#include "esp32-hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gate_hardware.hpp"
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
 #include "password.hpp"
+#include "restore_staging.hpp"
 #include "web_auth.hpp"
 
 namespace gate::management_api {
@@ -25,6 +30,12 @@ Context api_context{};
 gate::config::AppConfig& config() { return *api_context.active_config; }
 gate::bootstrap::Credentials& credentials() { return *api_context.credentials; }
 bool provisioned() { return *api_context.application_provisioned; }
+
+std::string chip_temperature_json() {
+  const float temperature_celsius = temperatureRead();
+  if (!std::isfinite(temperature_celsius)) return "null";
+  return std::to_string(temperature_celsius);
+}
 
 gate::config::ActiveLevel parse_level(const std::string& value) {
   return value == "high" ? gate::config::ActiveLevel::kHigh
@@ -48,6 +59,95 @@ std::string json_escape(const char* input) { return api_context.json_escape(inpu
 esp_err_t send_error(httpd_req_t* request, const char* status,
                      const std::string& message) {
   return api_context.send_error(request, status, message);
+}
+
+bool read_body(httpd_req_t* request, std::size_t maximum, std::string* body) {
+  if (request->content_len <= 0 ||
+      static_cast<std::size_t>(request->content_len) > maximum) return false;
+  body->assign(request->content_len, '\0');
+  std::size_t received = 0;
+  while (received < body->size()) {
+    const int count = httpd_req_recv(request, body->data() + received,
+                                     body->size() - received);
+    if (count <= 0) return false;
+    received += count;
+  }
+  return true;
+}
+
+esp_err_t backup_export_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  std::string body, password;
+  if (!read_body(request, 512, &body) ||
+      !form_value(body, "password", &password) ||
+      !gate::config::verify_admin_password(password, config().admin)) {
+    std::fill(password.begin(), password.end(), '\0');
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return send_error(request, "401 Unauthorized",
+                      "Administrator password is incorrect.");
+  }
+  std::vector<std::uint8_t> envelope;
+  const esp_err_t result = gate::backup::create_full_backup(
+      password, config().schema_version, &envelope);
+  std::fill(password.begin(), password.end(), '\0');
+  if (result != ESP_OK) {
+    return send_error(request, "500 Internal Server Error",
+                      "Could not create a consistent encrypted backup.");
+  }
+  httpd_resp_set_type(request, "application/octet-stream");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "Content-Disposition",
+                     "attachment; filename=garage-door-full.gdbak");
+  return httpd_resp_send(request,
+                         reinterpret_cast<const char*>(envelope.data()),
+                         envelope.size());
+}
+
+esp_err_t restore_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  char password[129]{};
+  if (httpd_req_get_hdr_value_str(request, "X-Backup-Password", password,
+                                  sizeof(password)) != ESP_OK) {
+    return send_error(request, "400 Bad Request", "Backup password is missing.");
+  }
+  if (request->content_len <= 0 ||
+      request->content_len > gate::backup::kMaximumNvsImageSize +
+                                 gate::backup::kEnvelopeHeaderSize +
+                                 gate::backup::kTagSize) {
+    std::fill(std::begin(password), std::end(password), '\0');
+    return send_error(request, "400 Bad Request", "Invalid backup file size.");
+  }
+  std::vector<std::uint8_t> envelope(request->content_len);
+  std::size_t received = 0;
+  while (received < envelope.size()) {
+    const int count = httpd_req_recv(
+        request, reinterpret_cast<char*>(envelope.data() + received),
+        envelope.size() - received);
+    if (count <= 0) {
+      std::fill(std::begin(password), std::end(password), '\0');
+      return send_error(request, "400 Bad Request", "Could not read backup file.");
+    }
+    received += count;
+  }
+  std::vector<std::uint8_t> image;
+  esp_err_t result = gate::backup::decrypt_full_backup(
+      envelope, password, &image);
+  std::fill(std::begin(password), std::end(password), '\0');
+  std::fill(envelope.begin(), envelope.end(), 0);
+  if (result == ESP_OK) result = gate::backup::stage_restore_image(image);
+  std::fill(image.begin(), image.end(), 0);
+  if (result != ESP_OK) {
+    return send_error(request, "400 Bad Request",
+                      "Backup password, file integrity, or compatibility is invalid.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  result = httpd_resp_sendstr(request, "{\"staged\":true,\"restarting\":true}");
+  if (result == ESP_OK) api_context.schedule_restart();
+  return result;
 }
 
 const char* decoder_health_name(gate::signal_decoder::DecoderHealth value) {
@@ -307,6 +407,7 @@ esp_err_t runtime_handler(httpd_req_t* request) {
       ",\"activeCommand\":\"" + std::string(gate::controller::to_string(state.active_command)) + "\"" +
       ",\"pulseActive\":" + std::string(state.pulse_active ? "true" : "false") +
       ",\"obstruction\":" + std::string(state.obstruction ? "true" : "false") +
+      ",\"chipTemperatureCelsius\":" + chip_temperature_json() +
       ",\"faultReason\":\"" + std::string(gate::controller::to_string(state.fault)) + "\"" +
       ",\"decoderInputs\":" + decoder_inputs +
       ",\"decoderSampleTimestampMs\":" +
@@ -952,6 +1053,8 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
       {.uri = "/api/v1/config/name", .method = HTTP_PUT, .handler = display_name_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/access/password", .method = HTTP_PUT, .handler = password_change_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/network/wifi", .method = HTTP_PUT, .handler = wifi_change_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/backup", .method = HTTP_POST, .handler = backup_export_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/restore", .method = HTTP_POST, .handler = restore_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/session/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/system/reboot", .method = HTTP_POST, .handler = reboot_handler, .user_ctx = nullptr},
   };
