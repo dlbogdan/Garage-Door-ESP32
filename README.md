@@ -341,6 +341,23 @@ third_party/  Pinned HomeSpan submodule
 The implementation is authoritative when older planning/status documents differ
 from current behavior.
 
+## License
+
+The original project code is proprietary and source-available under the
+[Garage Door ESP32 Source-Available License](LICENSE). Repository access permits
+inspection and evaluation only; it does not grant permission to incorporate,
+modify, distribute, manufacture with, deploy in, or otherwise use this code in
+another project, product, service, or commercial/OEM offering.
+
+Product developers and other parties seeking authorization must obtain a
+separate written license from Bogdan Dumitru at
+[bogdan.dumitru@me.com](mailto:bogdan.dumitru@me.com).
+
+Third-party dependencies, submodules, and managed components remain under their
+respective licenses. In particular, the pinned HomeSpan source under
+[`third_party/HomeSpan`](third_party/HomeSpan) is not covered by the project's
+proprietary license.
+
 ## Further documentation
 
 - [Development status](docs/development-status.md)
