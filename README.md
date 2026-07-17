@@ -377,6 +377,13 @@ ownership of their work while granting the rights needed to include it in this
 project and offer the project under source-available or separate commercial
 terms. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting code.
 
+Manual and AI-assisted analysis is allowed for understanding, review,
+documentation, permitted DIY use, and contributions. The license expressly
+prohibits “specification laundering”: using architecture summaries, behavioral
+maps, prompts, pseudocode, datasets, or other intermediate representations to
+have another person or AI reconstruct a substantially similar or substitutable
+project outside the license permissions.
+
 ## Further documentation
 
 - [Development status](docs/development-status.md)

@@ -18,6 +18,13 @@ Bogdan Dumitru, excluding Third-Party Materials.
 "Derivative Work" means any work based upon the Software that would constitute
 a derivative work under applicable copyright law.
 
+"Reconstruction Material" means any specification, architecture description,
+design document, behavioral map, interface reconstruction, pseudocode, prompt,
+embedding, dataset, summary, extracted representation, or other intermediate
+material derived from analysis of the Software and prepared for the purpose of
+enabling a person or automated system to reproduce, reconstruct, or implement a
+substantially similar or substitutable project outside this License.
+
 "Non-Commercial DIY Use" means use by a natural person, solely for private,
 non-commercial, do-it-yourself purposes, including personal use and sharing
 source-code forks or Derivative Works with other natural persons under Section 4.
@@ -41,6 +48,12 @@ to understand its operation and determine whether to request a separate license,
 or before exercising any permission granted elsewhere in this License. Copying,
 modification, and distribution are permitted only as expressly stated in the
 other applicable Sections of this License.
+
+Analysis may be performed manually or with automated tools, including artificial
+intelligence systems, for evaluation, security review, understanding, permitted
+Non-Commercial DIY Use, preparation of documentation about the Software, or a
+contribution governed by Section 8. Such analysis does not grant permission to
+use or disclose its results for a purpose prohibited by Section 6.
 
 3. PERSONAL DIY USE
 
@@ -116,7 +129,28 @@ without prior written authorization, You may not:
 Educational, research, nonprofit, or internal status does not create permission
 beyond Sections 2, 3, and 4. Any permission not expressly granted is reserved.
 
-6. SEPARATE LICENSES
+6. NO SPECIFICATION LAUNDERING OR INDIRECT RECONSTRUCTION
+
+You may not use access to the Software, directly or through one or more people,
+agents, models, or automated systems, to create, provide, publish, transmit, or
+use Reconstruction Material for the purpose of enabling another person or
+system to reproduce, reconstruct, or implement a substantially similar or
+substitutable project outside the permissions of this License.
+
+You may not divide analysis and implementation between separate people or
+systems, conceal the Software's role through summaries or other intermediate
+materials, or use a purported clean-room process to obtain a result that would
+not be permitted if produced directly from the Software. A recipient of
+Reconstruction Material receives no permission under this License to use that
+material for such a purpose.
+
+This Section does not prohibit good-faith reviews, commentary, issue reports,
+security disclosures, interoperability discussion, documentation, permitted
+Non-Commercial DIY Use, compliant source-code forks under Section 4, or
+contributions under Section 8, provided they are not used as a mechanism to
+evade this License.
+
+7. SEPARATE LICENSES
 
 Product Use and any other use outside Sections 2, 3, and 4 require a separate
 written license. To request authorization, contact:
@@ -128,7 +162,7 @@ Authorization is effective only when stated in a written agreement signed by
 the copyright holder. Silence, repository access, issue discussion, a pull
 request, or receipt of a copy does not constitute authorization.
 
-7. CONTRIBUTIONS
+8. CONTRIBUTIONS
 
 Contributions are welcome under the lightweight contribution agreement in the
 repository's CONTRIBUTING.md file. No contribution is accepted merely because
@@ -137,7 +171,7 @@ merged or expressly accepted in writing by Bogdan Dumitru. Substantial,
 employer-owned, or legally complex contributions may require a separate written
 agreement.
 
-8. THIRD-PARTY MATERIALS
+9. THIRD-PARTY MATERIALS
 
 This License does not apply to Third-Party Materials. Third-Party Materials
 remain subject exclusively to their respective copyright notices and license
@@ -145,7 +179,7 @@ terms. Nothing in this License restricts rights independently granted under a
 third-party license, and nothing in a third-party license grants rights to the
 Software owned by Bogdan Dumitru.
 
-9. OWNERSHIP
+10. OWNERSHIP
 
 The Software is licensed, not sold. Bogdan Dumitru retains all right, title, and
 interest in and to the Software, including all copyright and other intellectual
@@ -156,7 +190,7 @@ otherwise.
 For the avoidance of doubt, no patent license is granted, whether express,
 implied, by estoppel, exhaustion, or otherwise.
 
-10. TERMINATION
+11. TERMINATION
 
 Your permissions under Sections 2, 3, and 4 automatically terminate immediately
 if You breach this License. Upon termination, You must stop using the Software
@@ -164,7 +198,7 @@ and delete all copies under Your control, except where retention is required by
 law. Sections concerning ownership, disclaimers, liability, and enforcement
 survive termination.
 
-11. DISCLAIMER OF WARRANTY
+12. DISCLAIMER OF WARRANTY
 
 THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF ANY
 KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
@@ -172,7 +206,7 @@ PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, SAFETY, OR RELIABILITY.
 THE SOFTWARE MAY CONTROL MOVING MACHINERY AND ELECTRICAL OUTPUTS. YOU ASSUME ALL
 RISK ARISING FROM ACCESS, EVALUATION, TESTING, INSTALLATION, OR USE.
 
-12. LIMITATION OF LIABILITY
+13. LIMITATION OF LIABILITY
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, BOGDAN DUMITRU WILL NOT BE LIABLE FOR
 ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL
@@ -180,7 +214,7 @@ DAMAGES, OR FOR LOSS OF LIFE, PERSONAL INJURY, PROPERTY DAMAGE, DATA, PROFITS,
 GOODWILL, OR BUSINESS INTERRUPTION, ARISING FROM OR RELATED TO THE SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-13. ENFORCEMENT AND SEVERABILITY
+14. ENFORCEMENT AND SEVERABILITY
 
 Unauthorized use may cause irreparable harm for which monetary damages are
 inadequate, and the copyright holder may seek injunctive relief in addition to
@@ -188,7 +222,7 @@ other available remedies. If any provision is held unenforceable, it will be
 limited to the minimum extent necessary and the remaining provisions will
 continue in effect. A failure to enforce a provision is not a waiver.
 
-14. ENTIRE LICENSE
+15. ENTIRE LICENSE
 
 This License is the complete permission granted for access to the Software in
 the absence of a separate written agreement. A separate signed agreement may
