@@ -53,14 +53,15 @@ Subject to this License, You may, without contacting the copyright holder:
   d. use those devices privately and without charge for Your own household or
      personal purposes.
 
-This permission is personal, non-exclusive, and revocable upon breach. It does
-not permit distribution except as expressly allowed by Section 4, distribution
-of object code or firmware, distribution of hardware containing the Software,
-hosted access, installation for another person, or any activity performed for
-compensation or commercial advantage. A business, organization, employer,
-contractor, integrator, reseller, landlord, homeowners' association, or other
-legal entity does not qualify for Non-Commercial DIY Use. A natural person
-acting for any such entity does not qualify for Non-Commercial DIY Use.
+This permission is personal, non-exclusive, non-transferable, and automatically
+terminates upon breach. It does not permit distribution except as expressly
+allowed by Section 4, distribution of object code or firmware, distribution of
+hardware containing the Software, hosted access, installation for another
+person, or any activity performed for compensation or commercial advantage. A
+business, organization, employer, contractor, integrator, reseller, landlord,
+homeowners' association, or other legal entity does not qualify for
+Non-Commercial DIY Use. A natural person acting for any such entity does not
+qualify for Non-Commercial DIY Use.
 
 4. NON-COMMERCIAL FORKS AND SOURCE DISTRIBUTION
 
@@ -71,25 +72,27 @@ holder, provided that every distribution:
   a. is made without payment, fee, donation requirement, advertising revenue,
      commercial advantage, or other compensation;
   b. is provided in complete, human-readable source-code form through a publicly
-     accessible repository or an equivalent source archive;
-  c. includes this License in full and applies this License, in its entirety and
-     without modification, to the complete Derivative Work, with no additional
+     accessible repository or equivalent publicly accessible source archive;
+  c. includes this License in full and applies this License, unmodified and in
+     its entirety, to the complete Derivative Work, with no additional
      restrictions;
   d. preserves all copyright, attribution, license, trademark, and proprietary
      notices from the Software;
   e. prominently identifies You as the modifier, describes the material changes,
-     and states that the derivative is unofficial and is not endorsed, supported,
-     certified, or maintained by Bogdan Dumitru; and
+     and states that the Derivative Work is unofficial and is not endorsed,
+     supported, certified, or maintained by Bogdan Dumitru; and
   f. does not use Bogdan Dumitru's name, project branding, or trademarks to imply
      endorsement or to identify a different product, except for truthful
      attribution and compatibility statements.
 
 This permission covers source code only. Distribution of compiled firmware,
 executable binaries, object code, pre-flashed devices, assembled products, kits
-containing programmed devices, hosted services, or installations for another
-person requires separate written authorization. Recipients receive the same
-permissions directly under this License and may create further non-commercial
-source forks only while complying with this Section.
+containing programmed devices, hosted or network-accessible services, or
+installations for another person requires separate written authorization.
+Recipients receive the same permissions directly under this License and may
+create further non-commercial source forks only while complying with this
+Section. No recipient may relicense the Software or any Derivative Work under a
+different license.
 
 5. NO PRODUCT OR COMMERCIAL RIGHTS
 
@@ -99,8 +102,8 @@ without prior written authorization, You may not:
 
   a. use the Software or any substantial portion of it in another project,
      product, service, firmware, device, installation, or commercial offering;
-  b. copy, modify, adapt, translate, merge, link, embed, or create derivative
-     works from the Software, except as permitted by Sections 2, 3, and 4;
+  b. copy, modify, adapt, translate, merge, link, embed, or create Derivative
+     Works from the Software, except as permitted by Sections 2, 3, and 4;
   c. manufacture, have manufactured, sell, offer for sale, rent, lease,
      sublicense, host, deploy, distribute, publish, or otherwise make available
      the Software or any Derivative Work, except as permitted by Section 4;
@@ -153,11 +156,11 @@ implied, by estoppel, exhaustion, or otherwise.
 
 10. TERMINATION
 
-Your permissions under Sections 2, 3, and 4 terminate automatically and
-immediately if You breach this License. Upon termination, You must stop using the
-Software and delete all copies under Your control, except where retention is
-required by law. Sections concerning ownership, disclaimers, liability, and
-enforcement survive termination.
+Your permissions under Sections 2, 3, and 4 automatically terminate immediately
+if You breach this License. Upon termination, You must stop using the Software
+and delete all copies under Your control, except where retention is required by
+law. Sections concerning ownership, disclaimers, liability, and enforcement
+survive termination.
 
 11. DISCLAIMER OF WARRANTY
 
