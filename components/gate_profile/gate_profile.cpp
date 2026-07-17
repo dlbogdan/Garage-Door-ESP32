@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <utility>
 
 #include "cJSON.h"
@@ -526,12 +527,19 @@ esp_err_t parse(const std::string& json,
     *error = "Profile format, project, version, or schema is incompatible.";
     return ESP_ERR_NOT_SUPPORTED;
   }
-  Candidate parsed;
-  parsed.config = current;
-  if (!text(target, "vendor", 64, &parsed.metadata.vendor, error) ||
-      !text(target, "model", 64, &parsed.metadata.model, error) ||
-      !text(target, "name", 64, &parsed.metadata.name, error) ||
-      !text(target, "notes", 512, &parsed.metadata.notes, error)) {
+  // Candidate embeds the complete decoder tables. Allocating it in this
+  // request call chain can overflow the HTTP task before a stack canary can
+  // diagnose it, corrupting FreeRTOS interrupt-exit state instead.
+  auto parsed = std::make_unique<Candidate>();
+  if (!parsed) {
+    *error = "Not enough memory to parse the profile.";
+    return ESP_ERR_NO_MEM;
+  }
+  parsed->config = current;
+  if (!text(target, "vendor", 64, &parsed->metadata.vendor, error) ||
+      !text(target, "model", 64, &parsed->metadata.model, error) ||
+      !text(target, "name", 64, &parsed->metadata.name, error) ||
+      !text(target, "notes", 512, &parsed->metadata.notes, error)) {
     return ESP_ERR_INVALID_ARG;
   }
   std::string profile;
@@ -543,22 +551,22 @@ esp_err_t parse(const std::string& json,
       !object(op, "outputs", &outputs, error) ||
       !object(op, "feedback", &feedback, error)) return ESP_ERR_INVALID_ARG;
   if (profile == "sequential") {
-    parsed.config.gate_operator.profile = OperatorProfile::kSequential;
+    parsed->config.gate_operator.profile = OperatorProfile::kSequential;
   } else if (profile == "directional") {
-    parsed.config.gate_operator.profile = OperatorProfile::kDirectional;
+    parsed->config.gate_operator.profile = OperatorProfile::kDirectional;
   } else {
     *error = "operator.profile is unsupported.";
     return ESP_ERR_INVALID_ARG;
   }
-  parsed.config.gate_operator.minimum_interval_ms =
+  parsed->config.gate_operator.minimum_interval_ms =
       static_cast<std::uint32_t>(minimum_interval);
   const cJSON *step = nullptr, *open = nullptr, *close = nullptr;
   if (!object(outputs, "step", &step, error) ||
       !object(outputs, "open", &open, error) ||
       !object(outputs, "close", &close, error) ||
-      !parse_output(step, &parsed.config.gate_operator.step, error) ||
-      !parse_output(open, &parsed.config.gate_operator.open, error) ||
-      !parse_output(close, &parsed.config.gate_operator.close, error)) {
+      !parse_output(step, &parsed->config.gate_operator.step, error) ||
+      !parse_output(open, &parsed->config.gate_operator.open, error) ||
+      !parse_output(close, &parsed->config.gate_operator.close, error)) {
     return ESP_ERR_INVALID_ARG;
   }
   std::string topology, endpoint;
@@ -573,27 +581,27 @@ esp_err_t parse(const std::string& json,
       !object(feedback, "closed", &closed, error) ||
       !object(feedback, "decoder", &decoder, error)) return ESP_ERR_INVALID_ARG;
   if (topology == "single") {
-    parsed.config.gate_operator.feedback_topology = FeedbackTopology::kSingle;
+    parsed->config.gate_operator.feedback_topology = FeedbackTopology::kSingle;
   } else if (topology == "dual") {
-    parsed.config.gate_operator.feedback_topology = FeedbackTopology::kDual;
+    parsed->config.gate_operator.feedback_topology = FeedbackTopology::kDual;
   } else {
     *error = "feedback.topology is unsupported.";
     return ESP_ERR_INVALID_ARG;
   }
   if (endpoint == "open") {
-    parsed.config.gate_operator.single_active_endpoint = FeedbackEndpoint::kOpen;
+    parsed->config.gate_operator.single_active_endpoint = FeedbackEndpoint::kOpen;
   } else if (endpoint == "closed") {
-    parsed.config.gate_operator.single_active_endpoint = FeedbackEndpoint::kClosed;
+    parsed->config.gate_operator.single_active_endpoint = FeedbackEndpoint::kClosed;
   } else {
     *error = "feedback.singleActiveEndpoint is unsupported.";
     return ESP_ERR_INVALID_ARG;
   }
-  parsed.config.gate_operator.endpoint_stability_ms =
+  parsed->config.gate_operator.endpoint_stability_ms =
       static_cast<std::uint32_t>(stability);
-  if (!parse_input(single, &parsed.config.gate_operator.single_feedback, error) ||
-      !parse_input(opened, &parsed.config.gate_operator.opened_feedback, error) ||
-      !parse_input(closed, &parsed.config.gate_operator.closed_feedback, error) ||
-      !parse_decoder(decoder, &parsed.config.gate_operator.decoder, error)) {
+  if (!parse_input(single, &parsed->config.gate_operator.single_feedback, error) ||
+      !parse_input(opened, &parsed->config.gate_operator.opened_feedback, error) ||
+      !parse_input(closed, &parsed->config.gate_operator.closed_feedback, error) ||
+      !parse_decoder(decoder, &parsed->config.gate_operator.decoder, error)) {
     return ESP_ERR_INVALID_ARG;
   }
   std::int64_t opening = 0, closing = 0, release = 0;
@@ -602,22 +610,22 @@ esp_err_t parse(const std::string& json,
       !integer(timing, "sensorReleaseTimeoutMs", 0, 60000, &release, error)) {
     return ESP_ERR_INVALID_ARG;
   }
-  parsed.config.timing.opening_ms = static_cast<std::uint32_t>(opening);
-  parsed.config.timing.closing_ms = static_cast<std::uint32_t>(closing);
-  parsed.config.timing.sensor_release_timeout_ms =
+  parsed->config.timing.opening_ms = static_cast<std::uint32_t>(opening);
+  parsed->config.timing.closing_ms = static_cast<std::uint32_t>(closing);
+  parsed->config.timing.sensor_release_timeout_ms =
       static_cast<std::uint32_t>(release);
-  const auto errors = gate::config::validate(parsed.config);
+  const auto errors = gate::config::validate(parsed->config);
   if (!errors.empty()) {
     *error = errors.front().field + ": " + errors.front().message;
     return ESP_ERR_INVALID_ARG;
   }
-  parsed.normalized_json = serialize(parsed.config, parsed.metadata);
-  parsed.digest = sha256_hex(parsed.normalized_json);
-  if (parsed.normalized_json.empty() || parsed.digest.empty()) {
+  parsed->normalized_json = serialize(parsed->config, parsed->metadata);
+  parsed->digest = sha256_hex(parsed->normalized_json);
+  if (parsed->normalized_json.empty() || parsed->digest.empty()) {
     *error = "Could not normalize the profile.";
     return ESP_FAIL;
   }
-  *candidate = std::move(parsed);
+  *candidate = std::move(*parsed);
   return ESP_OK;
 }
 

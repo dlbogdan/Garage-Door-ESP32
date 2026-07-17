@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -111,9 +112,16 @@ esp_err_t gate_profile_preview_handler(httpd_req_t* request) {
   if (!read_body(request, gate::profile::kMaximumJsonSize, &body)) {
     return send_error(request, "400 Bad Request", "Invalid Gate Profile upload.");
   }
-  gate::profile::Candidate candidate;
+  // AppConfig contains the complete bounded decoder tables and is too large
+  // for a request-handler stack object. Keep both parse and response-working
+  // state on the heap; the HTTP task also services Wi-Fi/mDNS callbacks.
+  auto candidate = std::make_unique<gate::profile::Candidate>();
+  if (!candidate) {
+    return send_error(request, "503 Service Unavailable",
+                      "Not enough memory to review the Gate Profile.");
+  }
   std::string error;
-  if (gate::profile::parse(body, config(), &candidate, &error) != ESP_OK) {
+  if (gate::profile::parse(body, config(), candidate.get(), &error) != ESP_OK) {
     reviewed_gate_profile.reset();
     return send_error(request, "400 Bad Request",
                       error.empty() ? "Gate Profile is invalid." : error);
@@ -125,7 +133,7 @@ esp_err_t gate_profile_preview_handler(httpd_req_t* request) {
                       "Could not prepare the profile review.");
   }
   reviewed_gate_profile = ReviewedGateProfile{
-      std::move(candidate), gate::web_auth::token(), base_digest};
+      std::move(*candidate), gate::web_auth::token(), base_digest};
   const auto& reviewed = reviewed_gate_profile->candidate;
   const auto& op = reviewed.config.gate_operator;
   const std::string response =
