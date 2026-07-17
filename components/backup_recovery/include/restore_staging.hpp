@@ -12,6 +12,8 @@ enum class RestoreState : std::uint32_t {
   kReady = 1,
   kApplying = 2,
   kFailed = 3,
+  kApplied = 4,
+  kValidated = 5,
 };
 
 struct RestoreStatus final {
@@ -31,7 +33,18 @@ esp_err_t restore_status(RestoreStatus* status);
 
 // Runs before nvs_flash_init(). A ready job is marked applying before NVS is
 // erased. Interrupted applications are retried, with a hard attempt limit.
-esp_err_t apply_staged_restore_early();
+// A successfully written image is retained in staging and reported through
+// applied so the caller can reboot before any NVS client is initialized.
+esp_err_t apply_staged_restore_early(bool* applied);
+
+// Advances an applied restore through two clean validation boots. The first
+// successful boot records validated and requests one more restart; only the
+// second successful boot erases the retained recovery image.
+esp_err_t confirm_staged_restore(bool* restart_required);
+
+// Rearms a retained applied/validated image when NVS or application validation
+// rejects it. The next boot will rewrite it, subject to the attempt limit.
+esp_err_t retry_applied_restore();
 
 esp_err_t erase_staged_restore();
 
