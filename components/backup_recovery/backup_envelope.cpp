@@ -6,9 +6,10 @@
 #include <limits>
 
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/md.h"
-#include "mbedtls/pkcs5.h"
 
 namespace gate::backup {
 namespace {
@@ -18,6 +19,7 @@ constexpr std::array<std::uint8_t, 8> kMagic = {'G', 'D', 'N', 'V', 'S', 'B',
 constexpr std::uint16_t kKdfPbkdf2Sha256 = 1;
 constexpr std::uint16_t kCipherAes256Gcm = 1;
 constexpr std::size_t kKeySize = 32;
+constexpr std::uint32_t kKdfIterationsPerYield = 256;
 constexpr std::size_t kOffsetMagic = 0;
 constexpr std::size_t kOffsetVersion = 8;
 constexpr std::size_t kOffsetHeaderSize = 10;
@@ -78,11 +80,60 @@ esp_err_t derive_key(const std::string& password, const std::uint8_t* salt,
       iterations < 50000 || iterations > 1000000 || key == nullptr) {
     return ESP_ERR_INVALID_ARG;
   }
-  const int result = mbedtls_pkcs5_pbkdf2_hmac_ext(
-      MBEDTLS_MD_SHA256,
-      reinterpret_cast<const unsigned char*>(password.data()), password.size(),
-      salt, kSaltSize, iterations, key->size(), key->data());
-  return result == 0 ? ESP_OK : ESP_FAIL;
+  // PBKDF2-HMAC-SHA-256 produces exactly one block for a 32-byte key. Implement
+  // that RFC 8018 block incrementally so the HTTP task can periodically block
+  // and let its core's idle task service the task watchdog. This remains byte-
+  // compatible with mbedtls_pkcs5_pbkdf2_hmac_ext().
+  const mbedtls_md_info_t* info =
+      mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (info == nullptr) return ESP_FAIL;
+
+  mbedtls_md_context_t context;
+  mbedtls_md_init(&context);
+  int crypto_result = mbedtls_md_setup(&context, info, 1);
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_md_hmac_starts(
+        &context, reinterpret_cast<const unsigned char*>(password.data()),
+        password.size());
+  }
+
+  std::array<std::uint8_t, kKeySize> u{};
+  constexpr std::array<std::uint8_t, 4> kBlockIndex{0, 0, 0, 1};
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_md_hmac_update(&context, salt, kSaltSize);
+  }
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_md_hmac_update(
+        &context, kBlockIndex.data(), kBlockIndex.size());
+  }
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_md_hmac_finish(&context, u.data());
+  }
+  if (crypto_result == 0) *key = u;
+
+  for (std::uint32_t iteration = 1;
+       crypto_result == 0 && iteration < iterations; ++iteration) {
+    crypto_result = mbedtls_md_hmac_reset(&context);
+    if (crypto_result == 0) {
+      crypto_result = mbedtls_md_hmac_update(&context, u.data(), u.size());
+    }
+    if (crypto_result == 0) {
+      crypto_result = mbedtls_md_hmac_finish(&context, u.data());
+    }
+    if (crypto_result == 0) {
+      for (std::size_t index = 0; index < key->size(); ++index) {
+        (*key)[index] ^= u[index];
+      }
+    }
+    if ((iteration % kKdfIterationsPerYield) == 0) {
+      vTaskDelay(1);
+    }
+  }
+
+  mbedtls_md_free(&context);
+  secure_clear(u.data(), u.size());
+  if (crypto_result != 0) secure_clear(key->data(), key->size());
+  return crypto_result == 0 ? ESP_OK : ESP_FAIL;
 }
 
 bool valid_metadata(const EnvelopeMetadata& metadata) {
