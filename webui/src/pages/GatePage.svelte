@@ -6,9 +6,34 @@
     editing = $bindable(), operatorProfile = $bindable(), editingPatternIndex = $bindable(),
     onToggleEditing, onSaveSettings, onAddDecoderInput, onRemoveDecoderInput, onAddDecoderRule,
     rulesFor, groupSummary, inputName, onRemovePattern, onAddGroup, onAddPredicate, onRemovePredicate,
-    onLearnPeriodic, onControlGate
+    onLearnPeriodic, onControlGate, onExportProfile, onImportProfile, gateProfileReview,
+    onApplyProfile, onCancelProfile
   } = $props();
 </script>
+
+<section class="card">
+  <div class="section-title"><span>GP</span><div><h3>Gate Profile</h3><p>Portable non-secret hardware, timing, feedback, and decoder configuration.</p></div></div>
+  <div class="actions"><button type="button" disabled={saving} onclick={onExportProfile}>Download profile</button><label class="button secondary">Review imported profile<input class="visually-hidden" type="file" accept=".json,application/json" disabled={saving} onchange={(event) => onImportProfile(event.currentTarget.files?.[0] || null)} /></label></div>
+  <p class="warning">Gate Profiles contain no Wi-Fi, administrator, HomeKit identity, pairing, or trace-history secrets. Import replaces the complete Gate wiring, timing, feedback, and decoder configuration; incorrect GPIO assignments can energize unintended controller inputs.</p>
+  {#if gateProfileReview}
+    <section class="profile-review" aria-labelledby="profile-review-title">
+      <h4 id="profile-review-title">Validated replacement review</h4>
+      <p><strong>{gateProfileReview.target.name || 'Unnamed profile'}</strong> · {gateProfileReview.target.vendor || 'Unspecified vendor'} {gateProfileReview.target.model || 'Unspecified model'}</p>
+      {#if gateProfileReview.target.notes}<p>{gateProfileReview.target.notes}</p>{/if}
+      <div class="grid">
+        <article><small>Operator</small><strong>{gateProfileReview.current.operator.profile} → {gateProfileReview.candidate.operator.profile}</strong></article>
+        <article><small>Feedback</small><strong>{gateProfileReview.current.operator.feedback.topology} → {gateProfileReview.candidate.operator.feedback.topology}</strong></article>
+        <article><small>Decoder</small><strong>{gateProfileReview.current.operator.feedback.decoder.profile} → {gateProfileReview.candidate.operator.feedback.decoder.profile}</strong></article>
+        <article><small>Decoder size</small><strong>{gateProfileReview.current.operator.feedback.decoder.inputs.length}/{gateProfileReview.current.operator.feedback.decoder.rules.length} → {gateProfileReview.summary.decoderInputs}/{gateProfileReview.summary.decoderRules}</strong></article>
+        <article><small>Travel timing</small><strong>{gateProfileReview.current.timing.openingMs}/{gateProfileReview.current.timing.closingMs} ms → {gateProfileReview.summary.openingMs}/{gateProfileReview.summary.closingMs} ms</strong></article>
+        <article><small>Release timeout</small><strong>{gateProfileReview.current.timing.sensorReleaseTimeoutMs} ms → {gateProfileReview.summary.sensorReleaseTimeoutMs} ms</strong></article>
+      </div>
+      <details><summary>Review complete normalized JSON</summary><div class="profile-json"><div><h5>Current Gate configuration</h5><pre>{JSON.stringify(gateProfileReview.current, null, 2)}</pre></div><div><h5>Imported replacement</h5><pre>{JSON.stringify(gateProfileReview.candidate, null, 2)}</pre></div></div></details>
+      <p class="digest">Reviewed digest: <code>{gateProfileReview.digest}</code></p>
+      <div class="actions"><button type="button" class="primary" disabled={saving} onclick={onApplyProfile}>Confirm complete replacement</button><button type="button" class="secondary" disabled={saving} onclick={onCancelProfile}>Cancel review</button></div>
+    </section>
+  {/if}
+</section>
 
 <section class="card"><div class="section-title"><span>IO</span><div><h3>Gate hardware & timing</h3><p>Relay, feedback sensor, pulse logic, and travel timeouts.</p></div><button class="secondary edit" onclick={onToggleEditing}>{editing ? 'Cancel' : 'Edit settings'}</button></div>
         {#if editing}

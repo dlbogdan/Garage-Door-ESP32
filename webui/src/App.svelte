@@ -41,6 +41,7 @@
   let nameEditing = $state(false);
   let displayNameDraft = $state('');
   let editingPatternIndex = $state(null);
+  let gateProfileReview = $state(null);
 
   async function loadDashboard() {
     try {
@@ -238,6 +239,52 @@
       if (!response.ok) throw new Error(await response.text());
       message = 'Backup validated and staged. The controller is restarting onto the restored network…';
     } catch (error) { message = error instanceof Error ? error.message : 'Restore failed.'; saving = false; }
+  }
+
+  async function downloadGateProfile() {
+    saving = true; message = '';
+    try {
+      const response = await fetch('/api/v1/gate-profile', { cache: 'no-store' });
+      if (!response.ok) throw new Error(await response.text());
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url; anchor.download = 'garage-door-gate-profile.json'; anchor.click();
+      URL.revokeObjectURL(url);
+      message = 'Complete non-secret Gate Profile downloaded.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not export Gate Profile.'; }
+    saving = false;
+  }
+
+  async function reviewGateProfile(file) {
+    if (!file) return;
+    saving = true; message = 'Validating and normalizing the Gate Profile…'; gateProfileReview = null;
+    try {
+      const response = await fetch('/api/v1/gate-profile/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: file
+      });
+      if (!response.ok) throw new Error(await response.text());
+      gateProfileReview = await response.json();
+      message = 'Profile passed strict validation. Review every replacement value below.';
+    } catch (error) { message = error instanceof Error ? error.message : 'Could not import Gate Profile.'; }
+    saving = false;
+  }
+
+  async function applyGateProfile() {
+    if (!gateProfileReview) return;
+    if (!confirm('Replace the complete Gate operator, wiring, timing, feedback, and decoder configuration with this reviewed profile? The controller will restart.')) return;
+    saving = true; message = 'Applying the exact reviewed Gate Profile…';
+    try {
+      const response = await fetch('/api/v1/gate-profile/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
+        body: new URLSearchParams({ digest: gateProfileReview.digest, confirmation: 'replace-gate-configuration' })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      gateProfileReview = null;
+      message = 'Gate Profile applied atomically. The controller is restarting with the replacement configuration…';
+    } catch (error) {
+      message = error instanceof Error ? error.message : 'Could not apply Gate Profile.';
+      saving = false;
+    }
   }
 
   async function login(event) {
@@ -559,7 +606,7 @@
       <NetworkPage {status} {config} {saving} onSave={saveWifiNetwork} />
     {:else if activeTab === 'gate'}
       <GatePage
-        {config} {saving} {decoder} {pulsing} {liveInputs} {traceHistory} {traceNow}
+        {config} {saving} {decoder} {pulsing} {liveInputs} {traceHistory} {traceNow} {gateProfileReview}
         {learningPredicate} {learningProgress} {learningTrace}
         bind:editing bind:operatorProfile bind:editingPatternIndex
         onToggleEditing={() => { editing = !editing; message = ''; }}
@@ -574,6 +621,10 @@
         onRemovePredicate={removePredicate}
         onLearnPeriodic={learnPeriodic}
         onControlGate={controlGate}
+        onExportProfile={downloadGateProfile}
+        onImportProfile={reviewGateProfile}
+        onApplyProfile={applyGateProfile}
+        onCancelProfile={() => gateProfileReview = null}
       />
     {:else if activeTab === 'backup'}
       <BackupPage {saving} onBackup={downloadBackup} onRestore={(event, file) => restoreBackup(event, file, false)} />

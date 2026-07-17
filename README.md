@@ -185,7 +185,10 @@ password.
   static IP, custom DNS, and hostname settings are not implemented.
 - **Gate** — select sequential or directional actuation, configure output
   polarity and pulse timing, build custom feedback rules, inspect live decoder
-  evidence, learn timing predicates, and issue guarded local open/close commands.
+  evidence, learn timing predicates, issue guarded local open/close commands,
+  and export or review/import a complete non-secret Gate Profile.
+- **Backup** — download a password-encrypted complete NVS disaster-recovery
+  backup or stage a destructive full restore before restart.
 - **Firmware** — inspect application/partition state and upload an OTA
   application image with administrator re-authorization.
 - **Logs** — reserved UI area; persistent event logging is not implemented.
@@ -295,6 +298,8 @@ The firmware is split into small ESP-IDF components with explicit ownership:
 | `management_server` | Native HTTP server, embedded static assets, and route registration |
 | `setup_api` | Unauthenticated first-time setup routes |
 | `management_api` / `web_auth` | Authenticated APIs, sessions, CSRF, and re-authorization |
+| `backup_recovery` | Authenticated raw-NVS envelope, restore staging, and early-boot application |
+| `gate_profile` | Canonical non-secret profile serialization, strict parsing, validation, and digesting |
 | `gate_hardware` | Native GPIO input sampling and fail-safe output operation |
 | `signal_decoder` | Bounded configurable feedback-rule engine |
 | `gate_controller` | Pure reducer, operator strategy, and relay guards |
@@ -390,6 +395,8 @@ project outside the license permissions.
 - [Provisioning and management boundaries](docs/provisioning.md)
 - [Hardware baseline](docs/hardware.md)
 - [Signal decoder commissioning](docs/signal-decoder-commissioning.md)
+- [Full backup and disaster recovery](docs/backup-and-recovery.md)
+- [Gate Profile format and import](docs/gate-profile.md)
 - [OTA update design and status](docs/ota-update.md)
 - [Operator profile architecture](plans/operator-profile-architecture.md)
 - [Implementation plan and safety invariants](plans/implementation-plan.md)

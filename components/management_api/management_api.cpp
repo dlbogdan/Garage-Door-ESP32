@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gate_hardware.hpp"
+#include "gate_profile.hpp"
 #include "gate_runtime.hpp"
 #include "homespan_compatibility.hpp"
 #include "password.hpp"
@@ -26,6 +28,14 @@ namespace {
 
 constexpr char kTag[] = "management_api";
 Context api_context{};
+
+struct ReviewedGateProfile final {
+  gate::profile::Candidate candidate;
+  std::string session_token;
+  std::string base_digest;
+};
+
+std::optional<ReviewedGateProfile> reviewed_gate_profile;
 
 gate::config::AppConfig& config() { return *api_context.active_config; }
 gate::bootstrap::Credentials& credentials() { return *api_context.credentials; }
@@ -75,6 +85,125 @@ bool read_body(httpd_req_t* request, std::size_t maximum, std::string* body) {
   return true;
 }
 
+esp_err_t gate_profile_export_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request)) {
+    return send_error(request, "401 Unauthorized", "Authentication required.");
+  }
+  gate::profile::Metadata metadata;
+  metadata.name = config().homekit.display_name + " Gate Profile";
+  const std::string profile = gate::profile::serialize(config(), metadata);
+  if (profile.empty()) {
+    return send_error(request, "500 Internal Server Error",
+                      "Could not serialize the Gate Profile.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "Content-Disposition",
+                     "attachment; filename=garage-door-gate-profile.json");
+  return httpd_resp_send(request, profile.c_str(), profile.size());
+}
+
+esp_err_t gate_profile_preview_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  std::string body;
+  if (!read_body(request, gate::profile::kMaximumJsonSize, &body)) {
+    return send_error(request, "400 Bad Request", "Invalid Gate Profile upload.");
+  }
+  gate::profile::Candidate candidate;
+  std::string error;
+  if (gate::profile::parse(body, config(), &candidate, &error) != ESP_OK) {
+    reviewed_gate_profile.reset();
+    return send_error(request, "400 Bad Request",
+                      error.empty() ? "Gate Profile is invalid." : error);
+  }
+  const std::string current_json = gate::profile::serialize(config());
+  const std::string base_digest = gate::profile::sha256_hex(current_json);
+  if (current_json.empty() || base_digest.empty()) {
+    return send_error(request, "500 Internal Server Error",
+                      "Could not prepare the profile review.");
+  }
+  reviewed_gate_profile = ReviewedGateProfile{
+      std::move(candidate), gate::web_auth::token(), base_digest};
+  const auto& reviewed = reviewed_gate_profile->candidate;
+  const auto& op = reviewed.config.gate_operator;
+  const std::string response =
+      "{\"valid\":true,\"digest\":\"" + reviewed.digest +
+      "\",\"baseDigest\":\"" + base_digest +
+      "\",\"target\":{\"vendor\":\"" +
+      json_escape(reviewed.metadata.vendor.c_str()) +
+      "\",\"model\":\"" + json_escape(reviewed.metadata.model.c_str()) +
+      "\",\"name\":\"" + json_escape(reviewed.metadata.name.c_str()) +
+      "\",\"notes\":\"" + json_escape(reviewed.metadata.notes.c_str()) +
+      "\"},\"summary\":{\"operatorProfile\":\"" +
+      (op.profile == gate::config::OperatorProfile::kDirectional
+           ? "directional"
+           : "sequential") +
+      "\",\"feedbackTopology\":\"" +
+      (op.feedback_topology == gate::config::FeedbackTopology::kDual
+           ? "dual"
+           : "single") +
+      "\",\"decoderProfile\":\"" +
+      (op.decoder.profile == gate::config::FeedbackDecoderProfile::kCustomRules
+           ? "customRules"
+           : "endpointPreset") +
+      "\",\"decoderInputs\":" + std::to_string(op.decoder.input_count) +
+      ",\"decoderRules\":" + std::to_string(op.decoder.rules.rule_count) +
+      ",\"openingMs\":" +
+      std::to_string(reviewed.config.timing.opening_ms) +
+      ",\"closingMs\":" +
+      std::to_string(reviewed.config.timing.closing_ms) +
+      ",\"sensorReleaseTimeoutMs\":" +
+      std::to_string(reviewed.config.timing.sensor_release_timeout_ms) +
+      "},\"current\":" + current_json +
+      ",\"candidate\":" + reviewed.normalized_json + "}";
+  httpd_resp_set_type(request, "application/json");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, response.c_str(), response.size());
+}
+
+esp_err_t gate_profile_apply_handler(httpd_req_t* request) {
+  if (!gate::web_auth::authorize(request, true)) {
+    return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
+  }
+  std::string body, digest, confirmation;
+  if (!read_body(request, 512, &body) ||
+      !form_value(body, "digest", &digest) ||
+      !form_value(body, "confirmation", &confirmation) ||
+      confirmation != "replace-gate-configuration" ||
+      !reviewed_gate_profile.has_value() ||
+      reviewed_gate_profile->session_token != gate::web_auth::token() ||
+      reviewed_gate_profile->candidate.digest != digest) {
+    return send_error(request, "409 Conflict",
+                      "The reviewed Gate Profile is missing or no longer matches.");
+  }
+  const std::string current_digest = gate::profile::sha256_hex(
+      gate::profile::serialize(config()));
+  if (current_digest.empty() ||
+      current_digest != reviewed_gate_profile->base_digest) {
+    reviewed_gate_profile.reset();
+    return send_error(request, "409 Conflict",
+                      "Gate settings changed after review. Review the profile again.");
+  }
+  gate::config::AppConfig updated =
+      std::move(reviewed_gate_profile->candidate.config);
+  reviewed_gate_profile.reset();
+  const esp_err_t result = gate::config::ConfigRepository().save(updated);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to persist reviewed Gate Profile: %s",
+             esp_err_to_name(result));
+    return send_error(request, "500 Internal Server Error",
+                      "Could not persist the reviewed Gate Profile.");
+  }
+  config() = std::move(updated);
+  httpd_resp_set_type(request, "application/json");
+  const esp_err_t response = httpd_resp_sendstr(
+      request, "{\"applied\":true,\"restarting\":true}");
+  if (response == ESP_OK) api_context.schedule_restart();
+  return response;
+}
+
 esp_err_t backup_export_handler(httpd_req_t* request) {
   if (!gate::web_auth::authorize(request, true)) {
     return send_error(request, "403 Forbidden", "Invalid session or CSRF token.");
@@ -88,6 +217,14 @@ esp_err_t backup_export_handler(httpd_req_t* request) {
     return send_error(request, "401 Unauthorized",
                       "Administrator password is incorrect.");
   }
+  if (!gate::runtime::enter_maintenance()) {
+    std::fill(password.begin(), password.end(), '\0');
+    return send_error(request, "409 Conflict",
+                      "The gate must be idle and no maintenance operation may be active.");
+  }
+  struct MaintenanceGuard final {
+    ~MaintenanceGuard() { gate::runtime::leave_maintenance(); }
+  } maintenance_guard;
   std::vector<std::uint8_t> envelope;
   const esp_err_t result = gate::backup::create_full_backup(
       password, config().schema_version, &envelope);
@@ -1055,6 +1192,9 @@ esp_err_t register_routes(httpd_handle_t server, Context context) {
       {.uri = "/api/v1/network/wifi", .method = HTTP_PUT, .handler = wifi_change_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/backup", .method = HTTP_POST, .handler = backup_export_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/restore", .method = HTTP_POST, .handler = restore_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/gate-profile", .method = HTTP_GET, .handler = gate_profile_export_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/gate-profile/preview", .method = HTTP_POST, .handler = gate_profile_preview_handler, .user_ctx = nullptr},
+      {.uri = "/api/v1/gate-profile/apply", .method = HTTP_POST, .handler = gate_profile_apply_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/session/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = nullptr},
       {.uri = "/api/v1/system/reboot", .method = HTTP_POST, .handler = reboot_handler, .user_ctx = nullptr},
   };

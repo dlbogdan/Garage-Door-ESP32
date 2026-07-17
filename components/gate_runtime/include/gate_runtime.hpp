@@ -35,8 +35,9 @@ struct DecoderSnapshot {
 esp_err_t start(const gate::config::AppConfig& config);
 bool active();
 
-// OTA maintenance is admitted only while the actuator is inactive and the
-// reducer is not moving. While active, every command API rejects requests.
+// Destructive/consistency-sensitive maintenance is admitted only while the
+// actuator is inactive and the reducer is not moving. While active, every
+// command API rejects requests.
 bool enter_maintenance();
 void leave_maintenance();
 bool maintenance_active();

@@ -494,14 +494,14 @@ bool enter_maintenance() {
     maintenance.store(false);
     return false;
   }
-  ESP_LOGI(kTag, "OTA maintenance mode entered; commands interlocked");
+  ESP_LOGI(kTag, "Maintenance mode entered; commands interlocked");
   return true;
 }
 
 void leave_maintenance() {
   if (maintenance.exchange(false)) {
     gate::hardware::deactivate_all();
-    ESP_LOGI(kTag, "OTA maintenance mode left");
+    ESP_LOGI(kTag, "Maintenance mode left");
   }
 }
 

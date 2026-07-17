@@ -1,6 +1,7 @@
 #include "setup_api.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,24 @@ namespace {
 constexpr char kTag[] = "setup_api";
 constexpr std::size_t kMaxRequestBody = 2048;
 Context api_context{};
+std::atomic_flag restore_upload_active = ATOMIC_FLAG_INIT;
+std::uint8_t restore_failure_count = 0;
+TickType_t restore_not_before = 0;
+
+struct RestoreUploadGuard final {
+  ~RestoreUploadGuard() { restore_upload_active.clear(std::memory_order_release); }
+};
+
+void record_restore_failure() {
+  restore_failure_count = std::min<std::uint8_t>(restore_failure_count + 1, 5);
+  const std::uint32_t delay_ms = 500U << (restore_failure_count - 1);
+  restore_not_before = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+  vTaskDelay(pdMS_TO_TICKS(delay_ms));
+}
+
+bool restore_backoff_active() {
+  return static_cast<std::int32_t>(restore_not_before - xTaskGetTickCount()) > 0;
+}
 
 gate::config::ActiveLevel parse_level(const std::string& value) {
   return value == "high" ? gate::config::ActiveLevel::kHigh
@@ -251,6 +270,15 @@ esp_err_t restore_handler(httpd_req_t* request) {
     return api_context.send_error(request, "403 Forbidden",
                                   "Configuration is already saved.");
   }
+  if (restore_upload_active.test_and_set(std::memory_order_acquire)) {
+    return api_context.send_error(request, "429 Too Many Requests",
+                                  "A restore request is already being processed.");
+  }
+  RestoreUploadGuard upload_guard;
+  if (restore_backoff_active()) {
+    return api_context.send_error(request, "429 Too Many Requests",
+                                  "Restore is temporarily unavailable. Try again later.");
+  }
   char password[129]{};
   if (httpd_req_get_hdr_value_str(request, "X-Backup-Password", password,
                                   sizeof(password)) != ESP_OK ||
@@ -259,6 +287,7 @@ esp_err_t restore_handler(httpd_req_t* request) {
                                  gate::backup::kEnvelopeHeaderSize +
                                  gate::backup::kTagSize) {
     std::fill(std::begin(password), std::end(password), '\0');
+    record_restore_failure();
     return api_context.send_error(request, "400 Bad Request",
                                   "Invalid restore request.");
   }
@@ -270,6 +299,8 @@ esp_err_t restore_handler(httpd_req_t* request) {
         envelope.size() - received);
     if (count <= 0) {
       std::fill(std::begin(password), std::end(password), '\0');
+      std::fill(envelope.begin(), envelope.end(), 0);
+      record_restore_failure();
       return api_context.send_error(request, "400 Bad Request",
                                     "Invalid restore request.");
     }
@@ -282,11 +313,13 @@ esp_err_t restore_handler(httpd_req_t* request) {
   if (result == ESP_OK) result = gate::backup::stage_restore_image(image);
   std::fill(image.begin(), image.end(), 0);
   if (result != ESP_OK) {
-    vTaskDelay(pdMS_TO_TICKS(500));
+    record_restore_failure();
     return api_context.send_error(
         request, "400 Bad Request",
         "Backup password, file integrity, or compatibility is invalid.");
   }
+  restore_failure_count = 0;
+  restore_not_before = 0;
   httpd_resp_set_type(request, "application/json");
   result = httpd_resp_sendstr(request, "{\"staged\":true,\"restarting\":true}");
   if (result == ESP_OK) api_context.schedule_restart();
