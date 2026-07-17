@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "ota_manager.hpp"
 #include "provisioning.hpp"
+#include "restore_staging.hpp"
 
 namespace {
 constexpr char kTag[] = "gate_app";
@@ -20,6 +21,12 @@ static_assert(ESP_IDF_VERSION == ESP_IDF_VERSION_VAL(5, 5, 4),
 }  // namespace
 
 extern "C" void app_main(void) {
+  const esp_err_t restore_result = gate::backup::apply_staged_restore_early();
+  if (restore_result != ESP_OK && restore_result != ESP_ERR_NOT_FOUND) {
+    ESP_LOGE(kTag, "Staged NVS restore failed safely: %s",
+             esp_err_to_name(restore_result));
+  }
+
   esp_err_t result = nvs_flash_init();
   if (result == ESP_ERR_NVS_NO_FREE_PAGES ||
       result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
