@@ -1,5 +1,6 @@
 Garage Door ESP32 Source-Available License
 Version 1.0, 17 July 2026
+License Identifier: LicenseRef-GarageDoorESP32-SourceAvailable-1.0
 
 Copyright (c) 2026 Bogdan Dumitru. All rights reserved.
 
@@ -14,15 +15,19 @@ Bogdan Dumitru, excluding Third-Party Materials.
 
 "You" means the individual or legal entity accessing or using the Software.
 
+"Derivative Work" means any work based upon the Software that would constitute
+a derivative work under applicable copyright law.
+
 "Non-Commercial DIY Use" means use by a natural person, solely for private,
 non-commercial, do-it-yourself purposes, including personal use and sharing
-source-code forks or derivative works with other natural persons under Section 4.
+source-code forks or Derivative Works with other natural persons under Section 4.
 
 "Product Use" means incorporating, adapting, linking, embedding, distributing,
 deploying, manufacturing with, selling with, licensing with, or otherwise using
 the Software or a derivative of it in any product, service, commercial offering,
-OEM offering, or project intended for another person or entity. Product Use does
-not include Non-Commercial DIY Use permitted by Sections 3 and 4.
+OEM offering, or project intended for another person or entity, or operating the
+Software or a Derivative Work as a hosted or network-accessible service. Product
+Use does not include Non-Commercial DIY Use permitted by Sections 3 and 4.
 
 "Third-Party Materials" means software and other materials identified as being
 owned or licensed by third parties, including dependencies, submodules, managed
@@ -32,9 +37,10 @@ or license notices.
 2. LIMITED EVALUATION PERMISSION
 
 Subject to this License, You may access, read, and evaluate the Software solely
-to understand its operation and determine whether to request a separate license.
-You may make one private, temporary copy only as reasonably necessary for that
-evaluation. You may not publish, distribute, or share that copy.
+to understand its operation and determine whether to request a separate license,
+or before exercising any permission granted elsewhere in this License. Copying,
+modification, and distribution are permitted only as expressly stated in the
+other applicable Sections of this License.
 
 3. PERSONAL DIY USE
 
@@ -59,15 +65,16 @@ acting for any such entity does not qualify for Non-Commercial DIY Use.
 4. NON-COMMERCIAL FORKS AND SOURCE DISTRIBUTION
 
 You may publicly fork, modify, and redistribute the Software and source-code
-derivative works for Non-Commercial DIY Use without contacting the copyright
+Derivative Works for Non-Commercial DIY Use without contacting the copyright
 holder, provided that every distribution:
 
   a. is made without payment, fee, donation requirement, advertising revenue,
      commercial advantage, or other compensation;
   b. is provided in complete, human-readable source-code form through a publicly
      accessible repository or an equivalent source archive;
-  c. includes this License in full and applies this same License, unmodified, to
-     the entire derivative work, with no additional restrictions;
+  c. includes this License in full and applies this License, in its entirety and
+     without modification, to the complete Derivative Work, with no additional
+     restrictions;
   d. preserves all copyright, attribution, license, trademark, and proprietary
      notices from the Software;
   e. prominently identifies You as the modifier, describes the material changes,
@@ -78,11 +85,11 @@ holder, provided that every distribution:
      attribution and compatibility statements.
 
 This permission covers source code only. Distribution of compiled firmware,
-object code, pre-flashed devices, assembled products, kits containing programmed
-devices, hosted services, or installations for another person requires separate
-written authorization. Recipients receive the same permissions directly under
-this License and may create further non-commercial source forks only while
-complying with this Section.
+executable binaries, object code, pre-flashed devices, assembled products, kits
+containing programmed devices, hosted services, or installations for another
+person requires separate written authorization. Recipients receive the same
+permissions directly under this License and may create further non-commercial
+source forks only while complying with this Section.
 
 5. NO PRODUCT OR COMMERCIAL RIGHTS
 
@@ -96,7 +103,7 @@ without prior written authorization, You may not:
      works from the Software, except as permitted by Sections 2, 3, and 4;
   c. manufacture, have manufactured, sell, offer for sale, rent, lease,
      sublicense, host, deploy, distribute, publish, or otherwise make available
-     the Software or any derivative work, except as permitted by Section 4;
+     the Software or any Derivative Work, except as permitted by Section 4;
   d. use the Software to provide paid or unpaid services to a third party;
   e. remove, obscure, or alter copyright, license, attribution, trademark, or
      proprietary notices; or
@@ -108,9 +115,7 @@ beyond Sections 2, 3, and 4. Any permission not expressly granted is reserved.
 
 6. SEPARATE LICENSES
 
-written license. To request authorization, contact:
 Product Use and any other use outside Sections 2, 3, and 4 require a separate
-written license. To request authorization, contact:
 written license. To request authorization, contact:
 
 Bogdan Dumitru
@@ -142,6 +147,9 @@ interest in and to the Software, including all copyright and other intellectual
 property rights. No patent, trademark, trade name, service mark, design, or
 other intellectual property license is granted by implication, estoppel, or
 otherwise.
+
+For the avoidance of doubt, no patent license is granted, whether express,
+implied, by estoppel, exhaustion, or otherwise.
 
 10. TERMINATION
 

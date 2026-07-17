@@ -349,6 +349,9 @@ download, modify, build, install, and use the project without contacting the
 author when it is solely for their own private, non-commercial use on devices
 they own and control.
 
+The custom SPDX-compatible license identifier is
+`LicenseRef-GarageDoorESP32-SourceAvailable-1.0`.
+
 Personal-use permission does not include redistribution, installing or building
 devices for others, paid work, hosted services, organizational use, or use in
 another project, product, service, or commercial/OEM offering.
