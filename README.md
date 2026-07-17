@@ -372,6 +372,11 @@ respective licenses. In particular, the pinned HomeSpan source under
 [`third_party/HomeSpan`](third_party/HomeSpan) is not covered by the project's
 proprietary license.
 
+DIY contributions are welcome through GitHub pull requests. Contributors retain
+ownership of their work while granting the rights needed to include it in this
+project and offer the project under source-available or separate commercial
+terms. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting code.
+
 ## Further documentation
 
 - [Development status](docs/development-status.md)

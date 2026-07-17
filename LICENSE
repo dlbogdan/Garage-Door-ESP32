@@ -130,10 +130,12 @@ request, or receipt of a copy does not constitute authorization.
 
 7. CONTRIBUTIONS
 
-No contribution is accepted under this License merely because it is submitted.
-Contributions may be accepted only under separate written contribution terms or
-an express written statement by the copyright holder. Do not submit code unless
-the applicable contribution terms are clear to You.
+Contributions are welcome under the lightweight contribution agreement in the
+repository's CONTRIBUTING.md file. No contribution is accepted merely because
+it is submitted. A contribution becomes part of the Software only when it is
+merged or expressly accepted in writing by Bogdan Dumitru. Substantial,
+employer-owned, or legally complex contributions may require a separate written
+agreement.
 
 8. THIRD-PARTY MATERIALS
 
