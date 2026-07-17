@@ -344,9 +344,13 @@ from current behavior.
 ## License
 
 The original project code is proprietary and source-available under the
-[Garage Door ESP32 Source-Available License](LICENSE). Repository access permits
-inspection and evaluation only; it does not grant permission to incorporate,
-modify, distribute, manufacture with, deploy in, or otherwise use this code in
+[Garage Door ESP32 Source-Available License](LICENSE). Individual DIY users may
+download, modify, build, install, and use the project without contacting the
+author when it is solely for their own private, non-commercial use on devices
+they own and control.
+
+Personal-use permission does not include redistribution, installing or building
+devices for others, paid work, hosted services, organizational use, or use in
 another project, product, service, or commercial/OEM offering.
 
 Product developers and other parties seeking authorization must obtain a
